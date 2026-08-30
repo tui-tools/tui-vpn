@@ -25,6 +25,13 @@ jobs:
   analyze:
     name: analyze go
     runs-on: ubuntu-latest
+    # Code scanning needs GitHub Advanced Security, which a private
+    # repository on this plan does not have: the upload step fails with
+    # "Advanced Security must be enabled for this repository". tui-vpn is
+    # private until its first release, so the job is skipped while it is, and
+    # starts running by itself on the day the repository is made public. The
+    # workflow is otherwise the family's, unmodified.
+    if: github.event.repository.visibility == 'public'
     permissions:
       # Upload the findings to the repository's code scanning view.
       security-events: write
