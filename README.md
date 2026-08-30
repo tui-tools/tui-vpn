@@ -198,7 +198,7 @@ hidden; one below the minimum is marked as such and the tool still runs.
 | Binary | `wg` |
 | Version read with | `wg --version` |
 | Minimum | 1.0.20200513 |
-| Tested | `1.0.20210914` |
+| Tested | none yet |
 
 ### headscale
 
