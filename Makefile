@@ -1,8 +1,8 @@
-# tui-template — build, test and lint.
+# tui-vpn — build, test and lint.
 
 GO      ?= go
 BIN     ?= bin
-TOOL    := tui-template
+TOOL    := tui-vpn
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 # The screenshot renderer is shared by the whole family and ships with the

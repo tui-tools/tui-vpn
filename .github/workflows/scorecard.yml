@@ -23,6 +23,12 @@ jobs:
   analysis:
     name: analyze
     runs-on: ubuntu-latest
+    # Scorecard grades a repository from the outside and publishes the
+    # result, which it can only do for a public one; the upload also needs
+    # code scanning, and that needs Advanced Security. tui-vpn is private
+    # until its first release, so the job skips itself until the day the
+    # repository is made public. The workflow is otherwise the family's.
+    if: github.event.repository.visibility == 'public'
     permissions:
       # Upload the findings to the repository's code scanning view.
       security-events: write

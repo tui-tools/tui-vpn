@@ -1,34 +1,58 @@
 <img src="assets/logo.png" alt="tui-tools" width="240">
 
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/tui-tools/tui-template/badge)](https://scorecard.dev/viewer/?uri=github.com/tui-tools/tui-template)
-[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/14368/badge)](https://www.bestpractices.dev/projects/14368)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/tui-tools/tui-vpn/badge)](https://scorecard.dev/viewer/?uri=github.com/tui-tools/tui-vpn)
 
-> **Beta.** The family is days old and still changing. Package names, flags and keys may move without notice until 1.0. Pin versions, and report what breaks.
+> **Beta, and unreleased.** This tool is private while its control-plane path is validated against a real Headscale and an IdP in the lab. Flags and keys may move without notice.
 
-# tui-template
+# tui-vpn
 
-The starting point for a new [tui-tools](https://github.com/tui-tools) tool.
-Press **Use this template**, rename it, replace one package, and you have a tool
-that looks and behaves like the rest of the family.
+WireGuard and its control plane, from the terminal.
 
-It is not a pile of TODOs: it is a working tool. It lists the files in a
-directory and can update a file's timestamp, which is deliberately trivial —
-what matters is the shape around it, and that shape is already correct.
+tui-vpn reads the WireGuard interfaces on a host straight from `wg show all dump` — peers, endpoints, the latest handshake, transfer counters, allowed IPs and keepalive — and, when a self-hosted [Headscale](https://headscale.net) control plane is present, the users, nodes and pre-authentication keys that decide who is allowed onto the network.
 
-![The list](docs/screenshots/tui-template-main.png)
+It is read-mostly. Bringing an interface up or down, adding or removing a peer, expiring a node, creating a user — every change is shown as the exact command line first and applied only after you confirm it. There is one place a process is ever started, `internal/wireguard`, so the command the dialog showed is provably the command that runs.
 
-![The confirm dialog](docs/screenshots/tui-template-touch.png)
+## Identity is OIDC, not a web admin
+
+User login is deliberately not in this tool. Identity is OpenID Connect, done in the client's own browser against your IdP; Headscale mirrors the users and nodes the IdP authorises. The Headscale server exposes no web admin, which is the whole point of the design — there is no console to log into, and tui-vpn does not pretend to be one. It reads the control plane's state and performs the few safe mutations, nothing more.
+
+A private key is never shown, typed, or put on a command line. Adding a peer needs only its public key; a pre-shared key is passed to `wg` as a file it opens itself, never as an argument (a command line is visible in `ps` to every user on the machine).
+
+## Try it with nothing installed
 
 ```sh
-make demo     # try it before changing anything
+tui-vpn --demo
 ```
 
-## Install
+`--demo` runs every screen against a fake WireGuard and a fake Headscale: one interface with two peers — one mid-handshake, one that has never connected — and a control plane with two users, three nodes and a pre-auth key. Nothing on the host is read and nothing is changed.
 
-The section below is **generated from `tool.json`** by
-`tui-kit/tools/render-install.py`, so the README and the family website never
-disagree about how a tool is installed. Run `make readme` after editing the
-manifest, and again after a release, since the download line names the version.
+## Screens
+
+`tab` (or `1`…`5`) switches between them:
+
+- **interfaces** — the WireGuard interfaces on this host, with peer counts and state. `u` / `d` bring one up or down.
+- **peers** — the peers of the selected interface: endpoint, handshake age, transfer, allowed-ips, keepalive. `a` / `x` add or remove a peer.
+- **users** — the Headscale users, and the provider they authenticate against. `n` creates one.
+- **nodes** — the machines registered with Headscale, who owns each, and key expiry. `e` expires one.
+- **preauth keys** — the keys that let a machine register itself, shown by prefix only.
+
+Every mutation opens a confirm dialog with the exact command before it runs.
+
+## `--report`, for bug reports
+
+```sh
+tui-vpn --report
+```
+
+Prints the versions and machine facts a bug report needs and exits — no UI, no privileges, and nothing about you: no private key, no public key of this host, no endpoint address. It names the versions of the two backends it drives (`wg` and `headscale`), whether this host runs a WireGuard interface, and whether a control plane is present. It runs even on a machine with neither installed, so "there is nothing here to drive" is itself a filable report.
+
+## `--check`, one read as JSON
+
+```sh
+tui-vpn --check
+```
+
+Reads the interfaces and the control plane once and prints a summary as JSON: interface and peer counts, per-peer handshake ages, whether Headscale is present, user and node counts, whether OIDC is configured, and a `compat` block naming each backend's version. Like `--report`, it carries no key, no endpoint and no address of the host — only counts and ages.
 
 <!-- install:start -->
 <!-- Generated by tui-kit/tools/render-install.py from tool.json. -->
@@ -37,11 +61,9 @@ manifest, and again after a release, since the download line names the version.
 ### From source
 
 ```sh
-git clone https://github.com/tui-tools/tui-template
-cd tui-template && make demo
+git clone https://github.com/tui-tools/tui-vpn
+cd tui-vpn && make demo
 ```
-
-Or press "Use this template" on GitHub, which is the point of it.
 
 Not packaged for these yet; the static binary works everywhere in the meantime.
 
@@ -74,11 +96,10 @@ sudo pacman -Sy
 Then, and for every other tool in the family:
 
 ```sh
-sudo pacman -S tui-template
+sudo pacman -S tui-vpn
 ```
 
-The template is never packaged. Your tool's channel turns available once its
-first release lands in pkgs.tui.tools.
+Available once the first release lands in pkgs.tui.tools.
 
 ### Debian and Ubuntu — coming soon
 
@@ -108,11 +129,10 @@ sudo apt update
 Then, and for every other tool in the family:
 
 ```sh
-sudo apt install tui-template
+sudo apt install tui-vpn
 ```
 
-The template is never packaged. Your tool's channel turns available once its
-first release lands in pkgs.tui.tools.
+Available once the first release lands in pkgs.tui.tools.
 
 ### Fedora and RHEL — coming soon
 
@@ -139,294 +159,69 @@ sudo dnf makecache
 Then, and for every other tool in the family:
 
 ```sh
-sudo dnf install tui-template
+sudo dnf install tui-vpn
 ```
 
-The template is never packaged. Your tool's channel turns available once its
-first release lands in pkgs.tui.tools.
+Available once the first release lands in pkgs.tui.tools.
 
 ### Any distribution, static binary — coming soon
 
 ```sh
-curl -fsSL https://github.com/tui-tools/tui-template/releases/download/v{version}/tui-template_{version}_linux_amd64.tar.gz | tar -xz tui-template
-sudo install -m0755 tui-template /usr/local/bin/tui-template
+curl -fsSL https://github.com/tui-tools/tui-vpn/releases/download/v{version}/tui-vpn_{version}_linux_amd64.tar.gz | tar -xz tui-vpn
+sudo install -m0755 tui-vpn /usr/local/bin/tui-vpn
 ```
 
-The template is never released. Your tool is, once you tag v0.1.0.
+Available once the first release is tagged.
 
 ### Verify a download
 
-Every release of `tui-template` ships a `checksums.txt`. Check an archive
-against it before installing:
+Every release of `tui-vpn` ships a `checksums.txt`. Check an archive against it
+before installing:
 
 ```sh
 sha256sum -c checksums.txt --ignore-missing
 ```
 <!-- install:end -->
 
-## Usage
-
-```sh
-tui-template                       # list the working directory
-tui-template --demo                # sample data, nothing is touched
-tui-template --dir /var/log        # list somewhere else
-tui-template --report              # print what a bug report needs, exit
-tui-template --theme ~/mytheme/colors.toml
-tui-template --version
-```
-
-### `--report`, for bug reports
-
-`--report` prints, in one block, everything a maintainer has to ask for
-otherwise: the tool and kit versions, the backend and the version probed off
-it, the distribution, the kernel, the terminal, the theme, the escalation
-prefix, and whether the running binary came from a package. It needs no
-privileges and touches nothing, so it works on the machine where the bug is —
-including one where no backend can be built at all, which is itself a thing
-worth reporting.
-
-```console
-$ tui-template --report
-tui-template 0.1.0 (kit v0.2.9)
-backend: coreutils 9.6
-mode: live
-distro: fedora 42 (Fedora Linux 42 (Workstation Edition))
-kernel: 6.19.14-108.fc42.x86_64
-arch: x86_64
-locale: en_US.UTF-8
-term: xterm-256color
-theme: tokyo-night
-sudo: sudo -n
-root: no
-binary: /usr/bin/tui-template (packaged)
-```
-
-The block is written to be published as it is: it carries no hostname, user
-name, home path or address, and no environment variable beyond `LANG`,
-`LC_ALL`, `TERM` and `TERM_PROGRAM`. A binary living under your home directory
-is reported as being there without naming the path. `--report` works with
-`--demo` too, where it says so on the `mode` line and names the backend the
-fake imitates.
-
-Everything above the tool-specific lines comes from the kit, so the whole
-family answers `--report` in the same shape. In your tool, `report.go` is where
-you add what only it knows — the backend it selected, what it saw of the ones
-it did not — and where you make sure none of it names the user: the kit scrubs
-what it collected itself, and a value you pass through `report.Extra` is yours
-to scrub. `scrubHome` in that file is the template's example, over the one
-place a path can reach the block here.
-
-The bug form asks for this block first — see
-[`.github/ISSUE_TEMPLATE/bug_report.yml`](.github/ISSUE_TEMPLATE/bug_report.yml),
-which is rendered from the kit's template and needs no editing beyond the
-rename.
-
-## What you get
-
-| From the kit | What it gives you |
-| --- | --- |
-| `theme` | Tokyo Night, Omarchy theme detection, `NO_COLOR` |
-| `ui` | Header, table, help bar, help screen, status line, dialogs |
-| `config` | `/etc/<tool>/…` + `~/.config/<tool>/…` + environment + flags |
-| `runner` | Preview → confirm → run, escalation, timeouts, and a fake |
-| `report` | The `--report` block a bug report pastes, in the family's shape |
-
-| In this repository | What it is |
-| --- | --- |
-| `cmd/tui-template/main.go` | Flags, configuration, backend selection, program start |
-| `cmd/tui-template/app.go` | The Bubble Tea model: one flat update loop |
-| `cmd/tui-template/view.go` | The four bands every screen draws |
-| `cmd/tui-template/report.go` | `--report`: the block a bug report pastes |
-| `internal/tool/tool.go` | Your model, your action table, your backend interface |
-| `internal/tool/real.go` | The backend that touches the machine |
-| `internal/tool/fake.go` | The in-memory backend behind `--demo` and the tests |
-| `internal/tool/tool_test.go` | The two assertions that matter |
-| `tool.json` | The manifest the family website reads: tagline, category, keys, install, security |
-| `.github/workflows/ci.yml` | gofmt, vet, race tests, cross-build, tool.json validation, release on a tag |
-| `.github/workflows/codeql.yml` | The static analysis pass, on every push and weekly |
-| `internal/tool/fuzz_test.go` | The fuzz target every parser package carries |
-| `test/smoke.sh` | The assertions the lab runs against a real machine |
-| `.goreleaser.yaml` | Static linux/amd64 and linux/arm64 archives |
-| `Makefile` | `check`, `build`, `demo`, `screenshots` |
-
-## Checklist for a new tool
-
-**1. Pick the name.** Every tool is `tui-<target>`: the repository, the Go
-module, the package directory, the binary and the config directory all carry
-that one name, with **no aliases**. `tui-firewall`, `tui-systemd`. Use
-`tui-<name>-<solution>` only when a target genuinely needs disambiguating.
-
-**2. Rename everything at once.**
-
-```sh
-NEW=tui-yourtool
-git mv cmd/tui-template "cmd/$NEW"
-grep -rl tui-template --include='*.go' --include='*.md' --include='*.yaml' \
-  --include='*.yml' --include='*.toml' . Makefile |
-  xargs sed -i "s/tui-template/$NEW/g"
-go mod edit -module "github.com/tui-tools/$NEW"
-go mod tidy && make check
-```
-
-**3. Replace `internal/tool`.** Rename the package to your subject
-(`internal/systemd`, `internal/containers`). Then, in order:
-
-- **the model** — the struct one row of your list holds, and the sort that puts
-  what matters on top;
-- **the action table** — one `ActionSpec` per key. The key map, the help screen
-  and the confirm dialog are all generated from it, so they cannot drift apart;
-- **`BuildCommand`** — intent to argv. Nothing else in the tool may build a
-  command line;
-- **`Real`** — one `runner.New` per binary you drive, and the reads;
-- **`Fake`** — the sample data `--demo` shows, and a `Hook` that applies a
-  confirmed command to it the way the real one would.
-
-**4. Adjust the view.** Columns in `view.go`, the header facts, and the widths
-at which columns are dropped. Check it at 40 columns as well as 120.
-
-**5. Fill in `tool.json`.** It is the manifest the family website reads, and
-the copy in this repository is a valid example rather than a set of TODOs.
-Replace the tagline (80 characters at most), the description, the category, the
-keys worth advertising, the install commands and — most carefully — the
-`security` block, which the site renders as a checklist a reader trusts. Drop
-`"unreleased": true` once you have tagged. The fields are documented in
-[tui-kit/docs/tool-manifest.md](https://github.com/tui-tools/tui-kit/blob/main/docs/tool-manifest.md),
-and `make manifest` validates yours against the schema — CI runs the same check,
-so a manifest that drifts fails the build.
-
-The `install` channels stay `"available": false` in the template, and they
-should stay false in your tool until it has actually shipped. A channel is a
-promise: `available: true` renders the command as one a reader can run today,
-and the family website lists the tool as installable from that package manager.
-Tag `v0.1.0`, let the release build the `.deb`, the `.rpm` and the pacman
-package, and wait for the next `pkgs.tui.tools` publish to pick them up — then
-flip `pacman`, `apt` and `dnf` to `true` and run `make readme`. `zypper` and
-`aur` stay false across the family; nothing publishes to them yet.
-
-**6. Declare the backend you drive.** The `backends[]` block of `tool.json`
-names the binary, how to read its version, the oldest version you support, the
-features that appeared in a known release and the caveats that apply to a
-range. `cmd/<tool>/compat.go` probes it once at startup and the header shows
-what it found, so a user on an unusual version learns it from the tool rather
-than from an empty screen. Ask `caps.Has("your-feature")` where a view needs a
-recent backend; never write a version comparison into the code. `tested` is
-generated from `compat/results.jsonl` by `make compat` after a run in
-[tui-lab](https://github.com/tui-tools/tui-lab) — see
-[tui-kit/docs/compatibility.md](https://github.com/tui-tools/tui-kit/blob/main/docs/compatibility.md).
-A tool that drives nothing external drops the block, `compat.go` and the header
-fact together.
-
-**7. Re-render the screenshots.** `make screenshots` runs the real binary in
-`--demo` under a pseudo-terminal, so the README frames are the actual UI:
-
-```make
-screenshots: build
-	python3 $(KIT)/tools/render-screenshots.py \
-		--bin $(BIN)/$(TOOL) --name $(TOOL) --out docs/screenshots \
-		--screen main= --screen touch=t --screen help=?
-```
-
-Each `--screen` is `name=keys`; the keys are typed once the UI has drawn.
-
-**8. Set the repository up.** Description, topics (`tui`, `terminal`,
-`bubbletea`, `go`, `golang`, `omarchy`, plus yours), issues on, wiki and
-projects off, delete-branch-on-merge on. Then add the tool to the family list in
-[tui-tools/.github](https://github.com/tui-tools/.github).
-
-**9. Release.** Tags are annotated, and the message is the release notes:
-GoReleaser renders it above the generated commit list, so the page opens with a
-sentence somebody wrote instead of a list of subjects.
-
-```sh
-git tag -a v0.1.0 -m "What changed for somebody running the tool."
-git push origin v0.1.0
-```
-
-Then `make readme`, to put the new version in the download line. CI runs the checks
-and GoReleaser attaches the static binaries. The tool then appears on
-[tui-tools.github.io](https://tui-tools.github.io) on its next build, which is
-hourly.
-
-## Compatibility
-
 <!-- compat:start -->
 <!-- Generated by tui-kit/tools/render-compat.py from tool.json. -->
 <!-- Edit the manifest, then run `make readme`. -->
 
-`tui-template` probes its backend once at startup and shows the version in the
+`tui-vpn` probes its backend once at startup and shows the version in the
 header. A version nobody has tested is marked `(untested)` there rather than
 hidden; one below the minimum is marked as such and the tool still runs.
 
-### coreutils
+### wireguard-tools
 
 | | |
 | --- | --- |
-| Binary | `touch` |
-| Version read with | `touch --version` |
-| Minimum | 8.0 |
+| Binary | `wg` |
+| Version read with | `wg --version` |
+| Minimum | 1.0.20200513 |
 | Tested | none yet |
-| Version-gated features | `no-dereference` (since 8.1) |
+
+### headscale
+
+| | |
+| --- | --- |
+| Binary | `headscale` |
+| Version read with | `headscale version` |
+| Minimum | 0.22.0 |
+| Tested | none yet |
 
 | Versions | What changes |
 | --- | --- |
-| `<8.1` | `touch -h` is missing, so the timestamp of a symlink is set on its target instead of on the link |
+| `<0.23` | `preauthkeys list` requires a `--user`, so the pre-auth keys screen may be empty; users and nodes are unaffected |
 
 The tested versions are generated from `compat/results.jsonl`, which the tool's
 own smoke test appends to when it runs against a real machine in
 [tui-lab](https://github.com/tui-tools/tui-lab).
 <!-- compat:end -->
 
-## The rules
+## Phase 2: OpenVPN
 
-These are what make the family a family rather than a folder of unrelated
-programs. Keep them, or the tool does not belong in it.
-
-- **Preview, then confirm.** Nothing changes the system without first showing
-  the exact command line. Build a `runner.Command`, show it with `ui.Confirm`,
-  hand that same value back to the runner. The dialog is the only path to a
-  mutation.
-- **Read-only by default.** Starting the tool only reads.
-- **No daemon, no state of its own.** The system is the source of truth; re-read
-  it after every change.
-- **`--demo` always works.** It builds and previews every command for real, and
-  touches nothing. A reviewer must be able to try the tool without a machine to
-  risk.
-- **Backend behind an interface.** The UI never names a binary.
-- **Small dependencies.** Bubble Tea, Bubbles, Lip Gloss and the kit.
-- **English everywhere**: code, comments, commits, UI strings.
-- **Responsive.** Layouts adapt from a 40-column pane to a full screen.
-
-## Tests worth writing
-
-`internal/tool/tool_test.go` shows the two that carry the tool:
-
-- **the command that runs is the command the preview showed**, character for
-  character — assert on `Fake.Commands()` after driving a key;
-- **nothing runs that was not confirmed** — cancel, then assert the fake
-  recorded nothing.
-
-Then table tests for every parser, against real command output pasted in
-verbatim. When a parser is wrong on someone's machine, their output becomes the
-next case.
-
-Then a fuzz target per parser, in the same package, seeded from the same
-`testdata` — `internal/tool/fuzz_test.go` is the template's example, over the
-one step every tool has: a name from outside becoming an argv. `make check`
-replays the seeds like any other test, and
-[tui-kit/templates/FUZZING.md](https://github.com/tui-tools/tui-kit/blob/main/templates/FUZZING.md)
-is the family rule, including why a crash's input gets committed.
-
-## Contributing
-
-Contributions to this template, and to any tool built from it, arrive as pull
-requests: [tui-kit's
-CONTRIBUTING.md](https://github.com/tui-tools/tui-kit/blob/main/CONTRIBUTING.md)
-is the family's process and the bar a change has to clear. A security problem
-is reported the way [tui-kit's
-SECURITY.md](https://github.com/tui-tools/tui-kit/blob/main/SECURITY.md)
-describes, privately, never in a public issue.
+OpenVPN is a planned second backend, with [openvpn-auth-oauth2](https://github.com/jkroepke/openvpn-auth-oauth2) for its OAuth2 story. It is not part of this phase.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Part of the
-[tui-tools](https://github.com/tui-tools) family.
+MIT. See [LICENSE](LICENSE).

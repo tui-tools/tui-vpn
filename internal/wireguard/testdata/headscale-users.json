@@ -1,0 +1,20 @@
+[
+  {
+    "id": "1",
+    "name": "ana",
+    "createdAt": "2026-07-01T09:12:00Z",
+    "displayName": "Ana Ba",
+    "email": "ana@example.com",
+    "providerId": "https://idp.example.com/ana",
+    "provider": "oidc"
+  },
+  {
+    "id": "2",
+    "name": "bo",
+    "createdAt": "2026-08-18T14:03:00Z",
+    "displayName": "Bo Cee",
+    "email": "bo@example.com",
+    "providerId": "https://idp.example.com/bo",
+    "provider": "oidc"
+  }
+]

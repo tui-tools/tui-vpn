@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
-  "name": "tui-template",
-  "binary": "tui-template",
-  "tagline": "A working skeleton for a new tui-tools tool",
-  "description": "The starting point for a new tool in the family. Press **Use this template**, rename it, replace one package, and you have a tool that looks and behaves like the rest.\n\nIt is not a pile of TODOs: it is a working tool. It lists the files in a directory and can update a file's timestamp, which is deliberately trivial — what matters is the shape around it, and that shape is already correct: the action table that generates the key map, the help screen and the confirm dialog; the backend interface with a real and a fake implementation; `--demo`; CI; and GoReleaser.\n\nThis `tool.json` is itself the example. It is a valid manifest, validated against [the schema](https://github.com/tui-tools/tui-kit/blob/main/schema/tool.schema.json) on every CI run, and the values are the ones you replace.",
-  "category": "template",
-  "homepage": "https://github.com/tui-tools/tui-template",
-  "repo": "https://github.com/tui-tools/tui-template",
+  "name": "tui-vpn",
+  "binary": "tui-vpn",
+  "tagline": "WireGuard and its control plane, from the terminal",
+  "description": "WireGuard from the terminal, together with the self-hosted control plane that decides who is allowed onto it.\n\nThe status screen reads your interfaces straight from `wg show all dump`: peers, endpoints, the latest handshake, transfer counters, allowed IPs and keepalive. Bringing an interface up or down, adding or removing a peer — every change is shown as the exact command line first and applied only after you confirm it. A private key is never shown, typed, or put on a command line; a pre-shared key is passed to `wg` as a file, never as an argument.\n\nWhen a [Headscale](https://headscale.net) control plane is present, tui-vpn also reads its users, nodes and pre-authentication keys, and performs the few safe mutations — expire a node, create a user — under the same preview-and-confirm rule. User login is deliberately not in here: identity is OpenID Connect, done in the client's browser against your IdP. The Headscale server exposes no web admin, which is the whole point of the design.\n\nRun it with `--demo` to see every screen against a fake WireGuard and a fake Headscale, with nothing installed. OpenVPN is a planned second backend, not part of this phase.",
+  "category": "network",
+  "homepage": "https://github.com/tui-tools/tui-vpn",
+  "repo": "https://github.com/tui-tools/tui-vpn",
   "license": "MIT",
   "platforms": [
     "linux/amd64",
@@ -16,30 +16,42 @@
   "logo": "assets/logo.png",
   "screenshots": [
     {
-      "path": "docs/screenshots/tui-template-main.png",
-      "caption": "The list: the four bands every tool in the family draws"
+      "path": "docs/screenshots/tui-vpn-main.png",
+      "caption": "The status screen: interfaces, peers and handshakes read from wg"
     },
     {
-      "path": "docs/screenshots/tui-template-touch.png",
+      "path": "docs/screenshots/tui-vpn-touch.png",
       "caption": "The confirm dialog, showing the exact command line before it runs"
     },
     {
-      "path": "docs/screenshots/tui-template-help.png",
-      "caption": "The help screen, generated from the action table"
+      "path": "docs/screenshots/tui-vpn-help.png",
+      "caption": "The help screen: keys, and how identity works over OIDC"
     }
   ],
   "keys": [
     {
-      "key": "t",
-      "action": "Touch the selected file"
+      "key": "tab / 1…5",
+      "action": "Switch screen (interfaces, peers, users, nodes, keys)"
     },
     {
-      "key": "/",
-      "action": "Filter the list"
+      "key": "u / d",
+      "action": "Bring the selected interface up / down"
+    },
+    {
+      "key": "a / x",
+      "action": "Add / remove a peer on the interface"
+    },
+    {
+      "key": "n",
+      "action": "Create a Headscale user"
+    },
+    {
+      "key": "e",
+      "action": "Expire the selected node"
     },
     {
       "key": "r / ctrl+r",
-      "action": "Re-read the directory"
+      "action": "Reload"
     },
     {
       "key": "?",
@@ -52,28 +64,36 @@
   ],
   "backends": [
     {
-      "name": "coreutils",
-      "binary": "touch",
+      "name": "wireguard-tools",
+      "binary": "wg",
       "versionCommand": [
-        "touch",
+        "wg",
         "--version"
       ],
-      "versionRegex": "coreutils\\) ([0-9][0-9.]*)",
-      "minimum": "8.0",
+      "versionRegex": "v([0-9][0-9.]*)",
+      "minimum": "1.0.20200513",
       "searchPaths": [
-        "/usr/bin/touch",
-        "/bin/touch"
+        "/usr/bin/wg",
+        "/bin/wg"
+      ]
+    },
+    {
+      "name": "headscale",
+      "binary": "headscale",
+      "versionCommand": [
+        "headscale",
+        "version"
       ],
-      "features": [
-        {
-          "name": "no-dereference",
-          "since": "8.1"
-        }
+      "versionRegex": "v?([0-9][0-9.]*)",
+      "minimum": "0.22.0",
+      "searchPaths": [
+        "/usr/bin/headscale",
+        "/usr/local/bin/headscale"
       ],
       "notes": [
         {
-          "range": "<8.1",
-          "impact": "`touch -h` is missing, so the timestamp of a symlink is set on its target instead of on the link"
+          "range": "<0.23",
+          "impact": "`preauthkeys list` requires a `--user`, so the pre-auth keys screen may be empty; users and nodes are unaffected"
         }
       ]
     }
@@ -82,55 +102,54 @@
     "repo_url": "https://pkgs.tui.tools",
     "source": {
       "available": true,
-      "command": "git clone https://github.com/tui-tools/tui-template\ncd tui-template && make demo",
-      "url": "https://github.com/tui-tools/tui-template",
-      "note": "Or press \"Use this template\" on GitHub, which is the point of it."
+      "command": "git clone https://github.com/tui-tools/tui-vpn\ncd tui-vpn && make demo",
+      "url": "https://github.com/tui-tools/tui-vpn"
     },
     "pacman": {
       "available": false,
-      "package": "tui-template",
+      "package": "tui-vpn",
       "repo": "tui-tools",
       "requires_repo_setup": true,
-      "command": "sudo pacman -S tui-template",
+      "command": "sudo pacman -S tui-vpn",
       "url": "https://pkgs.tui.tools/arch",
-      "note": "The template is never packaged. Your tool's channel turns available once its first release lands in pkgs.tui.tools."
+      "note": "Available once the first release lands in pkgs.tui.tools."
     },
     "apt": {
       "available": false,
-      "package": "tui-template",
+      "package": "tui-vpn",
       "repo": "tui-tools",
       "requires_repo_setup": true,
-      "command": "sudo apt install tui-template",
+      "command": "sudo apt install tui-vpn",
       "url": "https://pkgs.tui.tools/deb",
-      "note": "The template is never packaged. Your tool's channel turns available once its first release lands in pkgs.tui.tools."
+      "note": "Available once the first release lands in pkgs.tui.tools."
     },
     "dnf": {
       "available": false,
-      "package": "tui-template",
+      "package": "tui-vpn",
       "repo": "tui-tools",
       "requires_repo_setup": true,
-      "command": "sudo dnf install tui-template",
+      "command": "sudo dnf install tui-vpn",
       "url": "https://pkgs.tui.tools/rpm",
-      "note": "The template is never packaged. Your tool's channel turns available once its first release lands in pkgs.tui.tools."
+      "note": "Available once the first release lands in pkgs.tui.tools."
     },
     "binary": {
       "available": false,
-      "pattern": "tui-template_{version}_linux_{arch}.tar.gz",
-      "command": "curl -fsSL https://github.com/tui-tools/tui-template/releases/download/v{version}/tui-template_{version}_linux_{arch}.tar.gz | tar -xz tui-template\nsudo install -m0755 tui-template /usr/local/bin/tui-template",
-      "url": "https://github.com/tui-tools/tui-template/releases",
-      "note": "The template is never released. Your tool is, once you tag v0.1.0."
+      "pattern": "tui-vpn_{version}_linux_{arch}.tar.gz",
+      "command": "curl -fsSL https://github.com/tui-tools/tui-vpn/releases/download/v{version}/tui-vpn_{version}_linux_{arch}.tar.gz | tar -xz tui-vpn\nsudo install -m0755 tui-vpn /usr/local/bin/tui-vpn",
+      "url": "https://github.com/tui-tools/tui-vpn/releases",
+      "note": "Available once the first release is tagged."
     }
   },
   "security": {
-    "needs_sudo": "Only the touch action escalates, and only when the configured prefix is non-empty. Listing a directory is an ordinary read. Replace this sentence with what your own tool escalates for.",
+    "needs_sudo": "Reading a WireGuard interface needs CAP_NET_ADMIN and the Headscale CLI talks to a root-owned socket, so reads escalate through the configured prefix; `ip link` does not. Every mutation escalates and is previewed and confirmed first.",
     "preview_before_run": true,
     "no_daemon": true,
     "no_network": true,
     "static_binary": true,
     "signed_releases": false,
     "config_paths": [
-      "/etc/tui-template/config.toml",
-      "~/.config/tui-template/config.toml"
+      "/etc/tui-vpn/config.toml",
+      "~/.config/tui-vpn/config.toml"
     ]
   },
   "maintainers": [
@@ -139,12 +158,13 @@
       "github": "edimarlnx"
     }
   ],
-  "since": "2026-08-29",
+  "since": "2026-08-30",
   "keywords": [
-    "template",
-    "scaffold",
-    "bubbletea",
-    "starter"
+    "wireguard",
+    "vpn",
+    "headscale",
+    "oidc",
+    "network"
   ],
   "unreleased": true
 }

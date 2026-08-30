@@ -1,0 +1,13 @@
+[
+  {
+    "id": "1",
+    "key": "00000000aaaaaaaabbbbbbbbccccccccddddddddeeeeeeee",
+    "user": { "id": "1", "name": "ana" },
+    "reusable": true,
+    "ephemeral": false,
+    "used": false,
+    "expiration": "2026-08-31T09:12:00Z",
+    "createdAt": "2026-08-30T09:12:00Z",
+    "aclTags": ["tag:ci"]
+  }
+]

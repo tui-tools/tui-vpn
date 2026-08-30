@@ -1,10 +1,10 @@
 #!/bin/bash
-# Backend smoke test for tui-template, run inside a lab guest.
+# Backend smoke test for tui-vpn, run inside a lab guest.
 #
 # The contract (see tui-tools/tui-lab): this script runs on the guest as the
 # unprivileged lab user, escalates with `sudo -n` only, prints a short PASS/FAIL
 # table and exits non-zero if anything failed. The binary under test is at
-# $TUI_LAB_BIN (default: tui-template on PATH).
+# $TUI_LAB_BIN (default: tui-vpn on PATH).
 #
 # What a smoke test proves is that the tool reads the machine's *real* subject
 # and agrees with the machine's own tooling — not that a fake renders. The
@@ -13,7 +13,7 @@
 # record_compat that appends the probed version to compat/results.jsonl.
 set -uo pipefail
 
-bin="${TUI_LAB_BIN:-tui-template}"
+bin="${TUI_LAB_BIN:-tui-vpn}"
 pass=0
 fail=0
 
@@ -33,7 +33,7 @@ check() {
   fi
 }
 
-echo "--- tui-template smoke on $(. /etc/os-release && echo "$PRETTY_NAME")"
+echo "--- tui-vpn smoke on $(. /etc/os-release && echo "$PRETTY_NAME")"
 echo "      user=$(id -un)"
 
 # --- the report block ------------------------------------------------------
@@ -46,11 +46,19 @@ echo "      user=$(id -un)"
 # host name appearing in it is a bug, not a cosmetic detail.
 check "report names the backend" \
   "$bin --report" \
-  '^backend: coreutils'
+  '^backend: wireguard'
 
 check "report says the run was live" \
   "$bin --report" \
   '^mode: live$'
+
+check "report carries the wireguard-tools fact" \
+  "$bin --report" \
+  '^wireguard-tools: '
+
+check "report carries the headscale fact" \
+  "$bin --report" \
+  '^headscale: '
 
 check "report works in demo mode too" \
   "$bin --demo --report" \
@@ -68,5 +76,22 @@ check "report leaks neither a home path nor the host name" \
   "$bin --report | grep -vE '^(distro|kernel): ' | grep -cE '/home/|$(uname -n)' || true" \
   '^0$'
 
-echo "--- tui-template: $pass passed, $fail failed"
+# --- the check block -------------------------------------------------------
+#
+# --check reads once and prints JSON. Under --demo it runs with nothing
+# installed, so it is the read path that is always exercisable in the lab. It
+# must carry no key, no endpoint and no address of the host — only counts.
+check "check --demo is valid JSON naming the demo backend" \
+  "$bin --demo --check" \
+  '"backend": "demo"'
+
+check "check --demo reports the control plane as OIDC-configured" \
+  "$bin --demo --check" \
+  '"oidcConfigured": true'
+
+check "check --demo leaks no demo endpoint address" \
+  "$bin --demo --check | grep -cE '198\.51\.100\.|192\.0\.2\.' || true" \
+  '^0$'
+
+echo "--- tui-vpn: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

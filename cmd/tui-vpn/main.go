@@ -1,11 +1,18 @@
-// Command tui-template is the starting point for a new tui-tools tool. It
-// lists the files in a directory and can update a file's timestamp, which is
-// deliberately trivial: what matters is the shape around it, which is the same
-// in every tool of the family.
+// Command tui-vpn drives WireGuard and its control plane from the terminal:
+// the interfaces on this host, their peers and handshakes, and — when a
+// self-hosted Headscale control plane is present — the users, nodes and
+// pre-authentication keys that decide who is allowed onto the network.
 //
-// Rename it, replace internal/tool with your own subject, and keep the
-// contract: read-only by default, and no change without a previewed and
-// confirmed command line.
+// It is read-mostly. Every mutation — bringing an interface up or down, adding
+// or removing a peer, expiring a node, creating a user — is shown as the exact
+// command line first and applied only after it is confirmed. There is one place
+// a process is ever started, internal/wireguard, so the command the dialog
+// showed is the command that runs.
+//
+// User login is deliberately not in here: identity is OpenID Connect, done in
+// the client's browser against the IdP. The Headscale server exposes no web
+// admin, which is the whole point of the design; this tool reads its state and
+// performs the few safe mutations, nothing more.
 package main
 
 import (
@@ -17,25 +24,21 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/tui-tools/tui-kit/config"
 	"github.com/tui-tools/tui-kit/theme"
-	"github.com/tui-tools/tui-template/internal/tool"
+	"github.com/tui-tools/tui-vpn/internal/wireguard"
 )
 
 // toolName is the binary name, which is also the configuration directory:
-// /etc/tui-template/config.toml and ~/.config/tui-template/config.toml.
-const toolName = "tui-template"
-
-// keyDir is this tool's own configuration key. Yours go here.
-const keyDir = "dir"
+// /etc/tui-vpn/config.toml and ~/.config/tui-vpn/config.toml.
+const toolName = "tui-vpn"
 
 // version is stamped by the release build (-ldflags "-X main.version=…").
 var version = "dev"
 
-// defaults declares the configuration keys the tool understands. Only these
-// are read from the environment (TUI_TEMPLATE_DIR, …), so an unrelated
-// variable can never leak into the configuration.
+// defaults declares the configuration keys the tool understands. Only these are
+// read from the environment (TUI_VPN_*), so an unrelated variable can never
+// leak into the configuration.
 func defaults() map[string]string {
 	return map[string]string{
-		keyDir:          ".",
 		config.KeySudo:  "sudo -n",
 		config.KeyTheme: "",
 	}
@@ -44,8 +47,8 @@ func defaults() map[string]string {
 // options holds the parsed command line.
 type options struct {
 	demo        bool
+	check       bool
 	report      bool
-	dir         string
 	themePath   string
 	sudo        string
 	showVersion bool
@@ -60,21 +63,22 @@ func parseFlags(args []string, out *os.File) (options, error) {
 	fs := flag.NewFlagSet(toolName, flag.ContinueOnError)
 	fs.SetOutput(out)
 	fs.BoolVar(&opts.demo, "demo", false,
-		"run against sample data, without touching anything")
+		"run against a fake WireGuard and a fake Headscale, without reading this host")
+	fs.BoolVar(&opts.check, "check", false,
+		"read the interfaces and the control plane once, print the summary as JSON and exit "+
+			"(no UI, nothing is changed, no keys or endpoints of this host)")
 	fs.BoolVar(&opts.report, "report", false, reportUsage)
-	fs.StringVar(&opts.dir, "dir", "",
-		"directory to list (overrides the config file)")
 	fs.StringVar(&opts.themePath, "theme", "",
 		"path to an Omarchy-style colors.toml (overrides the config file)")
 	fs.StringVar(&opts.sudo, "sudo", "",
 		"privilege escalation prefix, e.g. \"sudo -n\" or \"\" to disable")
 	fs.BoolVar(&opts.showVersion, "version", false, "print the version and exit")
 	fs.Usage = func() {
-		_, _ = fmt.Fprintf(out, "tui-template — a starting point for a tui-tools tool\n\n"+
-			"Usage:\n  tui-template [flags]\n\nFlags:\n")
+		_, _ = fmt.Fprintf(out, "tui-vpn — WireGuard and its control plane, from the terminal\n\n"+
+			"Usage:\n  tui-vpn [flags]\n\nFlags:\n")
 		fs.PrintDefaults()
 		_, _ = fmt.Fprintf(out, "\nConfiguration is read from %s, then %s, "+
-			"then TUI_TEMPLATE_* in the environment.\n",
+			"then TUI_VPN_* in the environment.\n",
 			config.SystemPathFor(toolName), config.UserPathFor(toolName))
 	}
 	if err := fs.Parse(args); err != nil {
@@ -100,7 +104,6 @@ func main() {
 func run(args []string) error {
 	opts, err := parseFlags(args, os.Stdout)
 	if err != nil {
-		// flag already printed the reason and the usage.
 		if err == flag.ErrHelp {
 			return nil
 		}
@@ -128,23 +131,27 @@ func run(args []string) error {
 	}
 
 	// --report is the non-interactive path that must work everywhere. It reads
-	// nothing privileged and it survives a machine where no backend can be
-	// built, because "there is nothing here to drive" is one of the things a
-	// bug report has to be able to say. So it comes before the backend is
-	// required.
+	// nothing privileged and comes before the backend is required: a machine
+	// with neither WireGuard nor a control plane still has to be able to file a
+	// usable bug report.
 	if opts.report {
 		return runReport(cfg, opts, os.Stdout)
 	}
+
+	// The backend versions are probed once, at startup, and shown in the
+	// header. A missing binary is an empty result rather than an error.
+	backendCompat := probeCompat(context.Background(), opts.demo)
 
 	backend, err := pickBackend(cfg, opts)
 	if err != nil {
 		return err
 	}
 
-	// The backend's version is probed once, at startup, and shown in the
-	// header: a version nobody has tested says so there instead of surprising
-	// the user later.
-	backendCompat := probeCompat(context.Background(), opts.demo)
+	// --check is the other non-interactive path: it reads once and prints, and
+	// never starts a terminal program.
+	if opts.check {
+		return runCheck(context.Background(), backend, backendCompat, os.Stdout)
+	}
 
 	program := tea.NewProgram(newApp(backend, theme.New(), backendCompat),
 		tea.WithAltScreen())
@@ -155,9 +162,6 @@ func run(args []string) error {
 // applyOverrides folds the command line into the configuration, which is the
 // last and highest-precedence layer.
 func applyOverrides(cfg *config.Config, opts options) {
-	if opts.dir != "" {
-		cfg.Set(keyDir, opts.dir)
-	}
 	if opts.themePath != "" {
 		cfg.Set(config.KeyTheme, opts.themePath)
 	}
@@ -169,9 +173,9 @@ func applyOverrides(cfg *config.Config, opts options) {
 }
 
 // pickBackend returns the demo backend or the real one.
-func pickBackend(cfg config.Config, opts options) (tool.Backend, error) {
+func pickBackend(cfg config.Config, opts options) (wireguard.Backend, error) {
 	if opts.demo {
-		return tool.NewFake(), nil
+		return wireguard.NewFake(), nil
 	}
-	return tool.New(cfg.String(keyDir, "."), cfg.SudoPrefix())
+	return wireguard.New(cfg.SudoPrefix())
 }
