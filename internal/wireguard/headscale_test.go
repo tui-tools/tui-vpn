@@ -95,3 +95,41 @@ func TestParseRejectsNonJSON(t *testing.T) {
 		t.Error("expected an error for empty input")
 	}
 }
+
+// TestParseHeadscaleProtobufJSON covers the gRPC-gateway build's `--output
+// json` (Headscale 0.2x): snake_case keys, the register method as the protobuf
+// enum's integer, and timestamps as {seconds,nanos} objects. The camelCase,
+// RFC-3339 shape the ogen build prints is covered by the fixtures. This is the
+// shape a live Headscale 0.23 + Keycloak OIDC run produced.
+func TestParseHeadscaleProtobufJSON(t *testing.T) {
+	// register_method 3 is REGISTER_METHOD_OIDC; a node with it is the evidence
+	// that identity comes from an external OIDC provider.
+	nodesJSON := `[{"id":"1","name":"n","given_name":"n","user":{"id":"1","name":"vpnuser"},` +
+		`"ip_addresses":["100.64.0.1"],"last_seen":{"seconds":1788207232,"nanos":0},` +
+		`"expiry":{"seconds":1803759017,"nanos":0},"online":true,"register_method":3}]`
+	nodes, err := ParseNodes([]byte(nodesJSON))
+	if err != nil {
+		t.Fatalf("protobuf-json nodes: %v", err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("nodes = %d, want 1", len(nodes))
+	}
+	if nodes[0].User != "vpnuser" {
+		t.Errorf("node user = %q, want vpnuser", nodes[0].User)
+	}
+	if nodes[0].RegisterMethod != "oidc" {
+		t.Errorf("register method = %q, want oidc (enum 3)", nodes[0].RegisterMethod)
+	}
+	if nodes[0].LastSeen.IsZero() || nodes[0].Expiry.IsZero() {
+		t.Errorf("timestamps did not parse from {seconds,nanos}: last=%v expiry=%v",
+			nodes[0].LastSeen, nodes[0].Expiry)
+	}
+	if !InferOIDC(nil, nodes) {
+		t.Error("InferOIDC should be true for an OIDC-registered node")
+	}
+
+	users, err := ParseUsers([]byte(`[{"id":"1","name":"vpnuser","created_at":{"seconds":1788207017,"nanos":0}}]`))
+	if err != nil || len(users) != 1 || users[0].Name != "vpnuser" {
+		t.Errorf("protobuf-json users = %+v, %v", users, err)
+	}
+}

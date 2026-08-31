@@ -36,7 +36,7 @@ func ParseUsers(data []byte) ([]User, error) {
 		Email       string     `json:"email"`
 		Provider    string     `json:"provider"`
 		ProviderID  string     `json:"providerId"`
-		CreatedAt   string     `json:"createdAt"`
+		CreatedAt   flexTime   `json:"createdAt"`
 	}
 	if err := json.Unmarshal(raw, &rows); err != nil {
 		return nil, fmt.Errorf("users: %w", err)
@@ -50,7 +50,7 @@ func ParseUsers(data []byte) ([]User, error) {
 			Email:       r.Email,
 			Provider:    r.Provider,
 			ProviderID:  r.ProviderID,
-			CreatedAt:   parseTime(r.CreatedAt),
+			CreatedAt:   r.CreatedAt.time(),
 		})
 	}
 	return users, nil
@@ -63,15 +63,18 @@ func ParseNodes(data []byte) ([]Node, error) {
 		return nil, err
 	}
 	var rows []struct {
-		ID             flexString `json:"id"`
-		Name           string     `json:"name"`
-		GivenName      string     `json:"givenName"`
-		User           nameRef    `json:"user"`
-		IPAddresses    []string   `json:"ipAddresses"`
-		LastSeen       string     `json:"lastSeen"`
-		Expiry         string     `json:"expiry"`
-		Online         bool       `json:"online"`
-		RegisterMethod string     `json:"registerMethod"`
+		ID          flexString `json:"id"`
+		Name        string     `json:"name"`
+		GivenName   string     `json:"givenName"`
+		User        nameRef    `json:"user"`
+		IPAddresses []string   `json:"ipAddresses"`
+		LastSeen    flexTime   `json:"lastSeen"`
+		Expiry      flexTime   `json:"expiry"`
+		Online      bool       `json:"online"`
+		// headscale reports the register method as a string in some versions
+		// ("oidc") and as the protobuf enum's integer in others (3 = OIDC), so
+		// accept either and normalise it below.
+		RegisterMethod flexString `json:"registerMethod"`
 	}
 	if err := json.Unmarshal(raw, &rows); err != nil {
 		return nil, fmt.Errorf("nodes: %w", err)
@@ -84,10 +87,10 @@ func ParseNodes(data []byte) ([]Node, error) {
 			GivenName:      r.GivenName,
 			User:           r.User.name(),
 			IPAddresses:    r.IPAddresses,
-			LastSeen:       parseTime(r.LastSeen),
-			Expiry:         parseTime(r.Expiry),
+			LastSeen:       r.LastSeen.time(),
+			Expiry:         r.Expiry.time(),
 			Online:         r.Online,
-			RegisterMethod: r.RegisterMethod,
+			RegisterMethod: normalizeRegisterMethod(string(r.RegisterMethod)),
 		})
 	}
 	return nodes, nil
@@ -106,8 +109,8 @@ func ParsePreAuthKeys(data []byte) ([]PreAuthKey, error) {
 		Reusable   bool       `json:"reusable"`
 		Ephemeral  bool       `json:"ephemeral"`
 		Used       bool       `json:"used"`
-		Expiration string     `json:"expiration"`
-		CreatedAt  string     `json:"createdAt"`
+		Expiration flexTime   `json:"expiration"`
+		CreatedAt  flexTime   `json:"createdAt"`
 		ACLTags    []string   `json:"aclTags"`
 	}
 	if err := json.Unmarshal(raw, &rows); err != nil {
@@ -122,8 +125,8 @@ func ParsePreAuthKeys(data []byte) ([]PreAuthKey, error) {
 			Reusable:   r.Reusable,
 			Ephemeral:  r.Ephemeral,
 			Used:       r.Used,
-			Expiration: parseTime(r.Expiration),
-			CreatedAt:  parseTime(r.CreatedAt),
+			Expiration: r.Expiration.time(),
+			CreatedAt:  r.CreatedAt.time(),
 			ACLTags:    r.ACLTags,
 		})
 	}
@@ -139,14 +142,14 @@ func unwrap(data []byte, key string) (json.RawMessage, error) {
 	}
 	switch trimmed[0] {
 	case '[':
-		return trimmed, nil
+		return camelizeKeys(trimmed), nil
 	case '{':
 		var obj map[string]json.RawMessage
 		if err := json.Unmarshal(trimmed, &obj); err != nil {
 			return nil, err
 		}
 		if arr, ok := obj[key]; ok {
-			return arr, nil
+			return camelizeKeys(arr), nil
 		}
 		// An object with no known wrapper key is an empty list, not an error:
 		// some versions print {} when there is nothing to show.
@@ -155,6 +158,90 @@ func unwrap(data []byte, key string) (json.RawMessage, error) {
 		return nil, fmt.Errorf("not a JSON array or object")
 	}
 }
+
+// camelizeKeys rewrites every object key from snake_case to camelCase. A
+// gRPC-gateway Headscale (0.2x) prints protobuf-json -- snake_case keys, enums
+// as their integer, timestamps as {seconds,nanos} -- while the openapi (ogen)
+// build prints camelCase and RFC 3339. Normalising the keys here lets one set
+// of struct tags read both; flexString and flexTime absorb the enum and
+// timestamp shapes. On any error the input is returned unchanged.
+func camelizeKeys(raw json.RawMessage) json.RawMessage {
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return raw
+	}
+	out, err := json.Marshal(camelizeValue(v))
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
+func camelizeValue(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		m := make(map[string]any, len(t))
+		for k, val := range t {
+			m[snakeToCamel(k)] = camelizeValue(val)
+		}
+		return m
+	case []any:
+		for i := range t {
+			t[i] = camelizeValue(t[i])
+		}
+		return t
+	default:
+		return v
+	}
+}
+
+func snakeToCamel(s string) string {
+	if !strings.Contains(s, "_") {
+		return s
+	}
+	parts := strings.Split(s, "_")
+	for i := 1; i < len(parts); i++ {
+		if parts[i] != "" {
+			parts[i] = strings.ToUpper(parts[i][:1]) + parts[i][1:]
+		}
+	}
+	return strings.Join(parts, "")
+}
+
+// flexTime reads a Headscale timestamp in either shape: an RFC 3339 string, or
+// the protobuf {seconds,nanos} object the gRPC-gateway build prints.
+type flexTime struct{ t time.Time }
+
+func (f *flexTime) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 || string(b) == "null" {
+		return nil
+	}
+	if b[0] == '"' {
+		var s string
+		if err := json.Unmarshal(b, &s); err != nil {
+			return err
+		}
+		f.t = parseTime(s)
+		return nil
+	}
+	if b[0] == '{' {
+		var o struct {
+			Seconds int64 `json:"seconds"`
+			Nanos   int64 `json:"nanos"`
+		}
+		if err := json.Unmarshal(b, &o); err != nil {
+			return err
+		}
+		if o.Seconds != 0 || o.Nanos != 0 {
+			f.t = time.Unix(o.Seconds, o.Nanos).UTC()
+		}
+		return nil
+	}
+	return nil
+}
+
+func (f flexTime) time() time.Time { return f.t }
 
 // flexString is a string that also accepts a JSON number, because Headscale has
 // emitted an id both ways.
@@ -230,6 +317,23 @@ func prefix(key string) string {
 		return key
 	}
 	return key[:keyPrefixLen]
+}
+
+// normalizeRegisterMethod maps headscale's register method to a canonical
+// lower-case name, accepting both the string form ("oidc",
+// "REGISTER_METHOD_OIDC") and the protobuf enum's integer, whose value headscale
+// prints bare in `--output json` on current releases: 1 authkey, 2 cli, 3 oidc.
+func normalizeRegisterMethod(s string) string {
+	switch strings.ToUpper(strings.TrimSpace(s)) {
+	case "3", "OIDC", "REGISTER_METHOD_OIDC":
+		return "oidc"
+	case "1", "AUTHKEY", "AUTH_KEY", "REGISTER_METHOD_AUTH_KEY":
+		return "authkey"
+	case "2", "CLI", "REGISTER_METHOD_CLI":
+		return "cli"
+	default:
+		return strings.ToLower(strings.TrimSpace(s))
+	}
 }
 
 // InferOIDC reports whether user identity is coming from an external OpenID
