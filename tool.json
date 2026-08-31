@@ -16,12 +16,16 @@
   "logo": "assets/logo.png",
   "screenshots": [
     {
-      "path": "docs/screenshots/tui-vpn-main.png",
-      "caption": "The status screen: interfaces, peers and handshakes read from wg"
+      "path": "docs/screenshots/tui-vpn-status.png",
+      "caption": "The status screen: WireGuard interfaces, their state and peer counts, read from wg"
     },
     {
-      "path": "docs/screenshots/tui-vpn-touch.png",
-      "caption": "The confirm dialog, showing the exact command line before it runs"
+      "path": "docs/screenshots/tui-vpn-peers.png",
+      "caption": "The peers screen: endpoints, handshake age and transfer for the selected interface"
+    },
+    {
+      "path": "docs/screenshots/tui-vpn-headscale.png",
+      "caption": "The Headscale nodes screen: who owns each node and its state, above the OIDC identity note"
     },
     {
       "path": "docs/screenshots/tui-vpn-help.png",

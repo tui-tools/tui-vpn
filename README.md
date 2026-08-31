@@ -30,13 +30,21 @@ tui-vpn --demo
 
 `tab` (or `1`…`5`) switches between them:
 
+![The status screen: WireGuard interfaces, their state and peer counts](docs/screenshots/tui-vpn-status.png)
+
 - **interfaces** — the WireGuard interfaces on this host, with peer counts and state. `u` / `d` bring one up or down.
 - **peers** — the peers of the selected interface: endpoint, handshake age, transfer, allowed-ips, keepalive. `a` / `x` add or remove a peer.
 - **users** — the Headscale users, and the provider they authenticate against. `n` creates one.
 - **nodes** — the machines registered with Headscale, who owns each, and key expiry. `e` expires one.
 - **preauth keys** — the keys that let a machine register itself, shown by prefix only.
 
+![The peers screen: endpoints, handshake age and transfer for the selected interface](docs/screenshots/tui-vpn-peers.png)
+
+![The Headscale nodes screen: who owns each node and its state, above the OIDC identity note](docs/screenshots/tui-vpn-headscale.png)
+
 Every mutation opens a confirm dialog with the exact command before it runs.
+
+![The help screen: keys, and how identity works over OIDC](docs/screenshots/tui-vpn-help.png)
 
 ## `--report`, for bug reports
 
