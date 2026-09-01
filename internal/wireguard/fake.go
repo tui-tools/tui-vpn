@@ -205,7 +205,7 @@ func (f *Fake) writeConf(path, conf string) (string, error) {
 	port := 0
 	for _, line := range strings.Split(conf, "\n") {
 		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "ListenPort ="); ok {
-			fmt.Sscanf(strings.TrimSpace(v), "%d", &port)
+			_, _ = fmt.Sscanf(strings.TrimSpace(v), "%d", &port) // best-effort: 0 on mismatch is fine for the fake
 		}
 	}
 	f.state.Devices = append(f.state.Devices, Device{
@@ -294,7 +294,7 @@ func parseSimpleDuration(s string) (time.Duration, error) {
 		return 0, fmt.Errorf("not a valid expiration: %q", s)
 	}
 	n := 0
-	fmt.Sscanf(s[:len(s)-1], "%d", &n)
+	_, _ = fmt.Sscanf(s[:len(s)-1], "%d", &n) // best-effort: 0 on mismatch is fine for the fake
 	unit := map[byte]time.Duration{
 		's': time.Second, 'm': time.Minute, 'h': time.Hour,
 		'd': 24 * time.Hour, 'w': 7 * 24 * time.Hour, 'y': 365 * 24 * time.Hour,
