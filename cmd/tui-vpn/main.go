@@ -3,11 +3,12 @@
 // self-hosted Headscale control plane is present — the users, nodes and
 // pre-authentication keys that decide who is allowed onto the network.
 //
-// It is read-mostly. Every mutation — bringing an interface up or down, adding
-// or removing a peer, expiring a node, creating a user — is shown as the exact
-// command line first and applied only after it is confirmed. There is one place
-// a process is ever started, internal/wireguard, so the command the dialog
-// showed is the command that runs.
+// It manages as well as reads. Every mutation — creating an interface from
+// zero, bringing one up or down, adding or removing a peer, saving the runtime
+// config, creating a user or a pre-auth key, expiring, renaming or deleting a
+// node — is shown as the exact command line first and applied only after it is
+// confirmed. There is one place a process is ever started, internal/wireguard,
+// so the command the dialog showed is the command that runs.
 //
 // User login is deliberately not in here: identity is OpenID Connect, done in
 // the client's browser against the IdP. The Headscale server exposes no web
