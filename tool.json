@@ -177,6 +177,5 @@
     "headscale",
     "oidc",
     "network"
-  ],
-  "unreleased": true
+  ]
 }
