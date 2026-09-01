@@ -17,6 +17,12 @@ var searchPaths = map[string][]string{
 	"wg-quick":  {"/usr/bin/wg-quick", "/bin/wg-quick"},
 	"headscale": {"/usr/bin/headscale", "/usr/local/bin/headscale"},
 	"ip":        {"/usr/sbin/ip", "/sbin/ip", "/usr/bin/ip"},
+	// sh and install exist for the interface-bootstrap flow: the key pair is
+	// generated inside one root shell so the private key never leaves the exec
+	// site, and the conf file arrives on install's stdin so content never
+	// rides an argv.
+	"sh":      {"/bin/sh", "/usr/bin/sh"},
+	"install": {"/usr/bin/install", "/bin/install"},
 }
 
 // privilegedRead marks the binaries whose reads need root. Reading a WireGuard

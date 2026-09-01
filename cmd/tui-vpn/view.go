@@ -469,13 +469,22 @@ func (a *app) shortHelpKeys() []ui.KeyHint {
 	hints := []ui.KeyHint{{Key: "tab", Desc: "screen"}}
 	switch a.screen {
 	case wireguard.ScreenStatus:
-		hints = append(hints, ui.KeyHint{Key: "u", Desc: "up"}, ui.KeyHint{Key: "d", Desc: "down"})
+		hints = append(hints,
+			ui.KeyHint{Key: "N", Desc: "new iface"},
+			ui.KeyHint{Key: "u", Desc: "up"}, ui.KeyHint{Key: "d", Desc: "down"},
+			ui.KeyHint{Key: "w", Desc: "save"})
 	case wireguard.ScreenPeers:
-		hints = append(hints, ui.KeyHint{Key: "a", Desc: "add"}, ui.KeyHint{Key: "x", Desc: "remove"})
+		hints = append(hints,
+			ui.KeyHint{Key: "a", Desc: "add"}, ui.KeyHint{Key: "x", Desc: "remove"},
+			ui.KeyHint{Key: "w", Desc: "save"})
 	case wireguard.ScreenUsers:
 		hints = append(hints, ui.KeyHint{Key: "n", Desc: "new user"})
 	case wireguard.ScreenNodes:
-		hints = append(hints, ui.KeyHint{Key: "e", Desc: "expire"})
+		hints = append(hints,
+			ui.KeyHint{Key: "e", Desc: "expire"}, ui.KeyHint{Key: "m", Desc: "rename"},
+			ui.KeyHint{Key: "x", Desc: "delete"})
+	case wireguard.ScreenKeys:
+		hints = append(hints, ui.KeyHint{Key: "n", Desc: "new key"})
 	}
 	return append(hints,
 		ui.KeyHint{Key: "r", Desc: "reload"},
@@ -494,10 +503,13 @@ func helpKeys() []ui.KeyHint {
 		{Key: "pgup/pgdn", Desc: "scroll a page"},
 		{Key: "r", Desc: "reload"},
 		{Key: "", Desc: ""},
+		{Key: "N", Desc: "create a new interface from zero (keygen, conf, up)"},
 		{Key: "u / d", Desc: "bring the selected interface up / down"},
-		{Key: "a / x", Desc: "add / remove a peer on the interface"},
-		{Key: "n", Desc: "create a Headscale user"},
-		{Key: "e", Desc: "expire the selected node"},
+		{Key: "w", Desc: "save the interface's runtime config (wg-quick save)"},
+		{Key: "a / x", Desc: "add / remove a peer on the interface (add: end with \"psk\""},
+		{Key: "", Desc: "to also generate a pre-shared key file)"},
+		{Key: "n", Desc: "create a Headscale user (users) / pre-auth key (keys)"},
+		{Key: "e / m / x", Desc: "expire / rename / delete the selected node"},
 		{Key: "", Desc: ""},
 		{Key: "identity", Desc: "login is OIDC in the client's browser against your IdP;"},
 		{Key: "", Desc: "the Headscale server exposes no web admin, by design"},

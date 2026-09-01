@@ -32,6 +32,12 @@ const (
 	demoIfacePub = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 	demoPeer1Pub = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="
 	demoPeer2Pub = "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC="
+	// demoNewIfacePub is the public key the demo "generates" for an interface
+	// created from zero. Only ever a public key: the demo, like the real
+	// backend, has no private key to show.
+	demoNewIfacePub = "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD="
+	// demoNewPreAuthKey is the one-time key the demo "creates". Plainly fake.
+	demoNewPreAuthKey = "demodemodemodemodemodemodemodemodemodemo1234"
 )
 
 // DemoIfacePub, DemoPeer1Pub and DemoPeer2Pub expose the placeholder public
@@ -88,17 +94,45 @@ func (f *Fake) apply(cmd runner.Command) (string, error) {
 		return f.setUp(argv[2], true)
 	case len(argv) == 3 && argv[0] == "wg-quick" && argv[1] == "down":
 		return f.setUp(argv[2], false)
+	case len(argv) == 3 && argv[0] == "wg-quick" && argv[1] == "save":
+		return f.saveConfig(argv[2])
 	case len(argv) >= 6 && argv[0] == "wg" && argv[1] == "set" && argv[3] == "peer" && argv[5] == "remove":
 		return f.removePeer(argv[2], argv[4])
 	case len(argv) >= 7 && argv[0] == "wg" && argv[1] == "set" && argv[3] == "peer" && argv[5] == "allowed-ips":
-		return f.addPeer(argv[2], argv[4], strings.Split(argv[6], ","))
+		return f.addPeer(argv[2], argv[4], strings.Split(argv[6], ","), hasToken(argv, "preshared-key"))
+	case len(argv) == 3 && argv[0] == "sh" && argv[1] == "-c" && strings.Contains(argv[2], "wg genkey"):
+		// The keygen shell: the demo "writes" the private key nowhere and
+		// answers with the invented public key, exactly the value the real
+		// command would print.
+		return demoNewIfacePub, nil
+	case len(argv) == 3 && argv[0] == "sh" && argv[1] == "-c" && strings.Contains(argv[2], "wg genpsk"):
+		// The PSK shell: nothing to return — the value stays in its file.
+		return "", nil
+	case len(argv) == 5 && argv[0] == "install" && strings.HasPrefix(argv[4], "/etc/wireguard/") && strings.HasSuffix(argv[4], ".conf"):
+		return f.writeConf(argv[4], cmd.Stdin)
 	case len(argv) == 5 && argv[0] == "headscale" && argv[1] == "nodes" && argv[2] == "expire":
 		return f.expireNode(argv[4])
+	case len(argv) == 6 && argv[0] == "headscale" && argv[1] == "nodes" && argv[2] == "delete" && argv[5] == "--force":
+		return f.deleteNode(argv[4])
+	case len(argv) == 6 && argv[0] == "headscale" && argv[1] == "nodes" && argv[2] == "rename":
+		return f.renameNode(argv[4], argv[5])
+	case len(argv) >= 7 && argv[0] == "headscale" && argv[1] == "preauthkeys" && argv[2] == "create":
+		return f.createPreAuthKey(argv)
 	case len(argv) == 4 && argv[0] == "headscale" && argv[1] == "users" && argv[2] == "create":
 		return f.createUser(argv[3])
 	default:
 		return "", fmt.Errorf("demo backend does not know how to apply %q", cmd.String())
 	}
+}
+
+// hasToken reports whether argv carries a literal token.
+func hasToken(argv []string, token string) bool {
+	for _, a := range argv {
+		if a == token {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *Fake) setUp(iface string, up bool) (string, error) {
@@ -130,17 +164,142 @@ func (f *Fake) removePeer(iface, key string) (string, error) {
 	return "", fmt.Errorf("no such peer on %s", iface)
 }
 
-func (f *Fake) addPeer(iface, key string, ips []string) (string, error) {
+func (f *Fake) addPeer(iface, key string, ips []string, withPSK bool) (string, error) {
 	for i := range f.state.Devices {
 		if f.state.Devices[i].Name == iface {
 			f.state.Devices[i].Peers = append(f.state.Devices[i].Peers, Peer{
-				PublicKey:  key,
-				AllowedIPs: ips,
+				PublicKey:       key,
+				AllowedIPs:      ips,
+				HasPresharedKey: withPSK,
 			})
 			return "", nil
 		}
 	}
 	return "", fmt.Errorf("no such interface: %s", iface)
+}
+
+// saveConfig persists nothing (the demo has no disk) but answers the way
+// wg-quick would, so the UI flow is exercised end to end.
+func (f *Fake) saveConfig(iface string) (string, error) {
+	for _, d := range f.state.Devices {
+		if d.Name == iface {
+			return "config saved to " + ConfPath(iface), nil
+		}
+	}
+	return "", fmt.Errorf("no such interface: %s", iface)
+}
+
+// writeConf applies the install that creates a new interface's conf: the demo
+// grows a device, down and peerless, keyed with the invented public key the
+// keygen step answered.
+func (f *Fake) writeConf(path, conf string) (string, error) {
+	name := strings.TrimSuffix(strings.TrimPrefix(path, "/etc/wireguard/"), ".conf")
+	if name == "" || !ValidInterface(name) {
+		return "", fmt.Errorf("not a wireguard conf path: %s", path)
+	}
+	for _, d := range f.state.Devices {
+		if d.Name == name {
+			return "", fmt.Errorf("interface %s already exists", name)
+		}
+	}
+	port := 0
+	for _, line := range strings.Split(conf, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "ListenPort ="); ok {
+			fmt.Sscanf(strings.TrimSpace(v), "%d", &port)
+		}
+	}
+	f.state.Devices = append(f.state.Devices, Device{
+		Name:          name,
+		PublicKey:     demoNewIfacePub,
+		HasPrivateKey: true,
+		ListenPort:    port,
+		FwMark:        "off",
+		Up:            false,
+	})
+	return "", nil
+}
+
+func (f *Fake) deleteNode(id string) (string, error) {
+	nodes := f.state.Headscale.Nodes
+	for i := range nodes {
+		if nodes[i].ID == id {
+			f.state.Headscale.Nodes = append(nodes[:i], nodes[i+1:]...)
+			return "Node destroyed", nil
+		}
+	}
+	return "", fmt.Errorf("no such node: %s", id)
+}
+
+func (f *Fake) renameNode(id, name string) (string, error) {
+	for i := range f.state.Headscale.Nodes {
+		if f.state.Headscale.Nodes[i].ID == id {
+			f.state.Headscale.Nodes[i].GivenName = name
+			return "Node renamed", nil
+		}
+	}
+	return "", fmt.Errorf("no such node: %s", id)
+}
+
+// createPreAuthKey applies `headscale preauthkeys create`, growing the key
+// list and answering with the full one-time key the way headscale prints it.
+// Like upstream, the full key appears only in this answer: the state keeps the
+// prefix alone.
+func (f *Fake) createPreAuthKey(argv []string) (string, error) {
+	userID, expiration := "", "24h"
+	reusable, ephemeral := false, false
+	for i := 3; i < len(argv); i++ {
+		switch argv[i] {
+		case "--user":
+			i++
+			if i < len(argv) {
+				userID = argv[i]
+			}
+		case "--reusable":
+			reusable = true
+		case "--ephemeral":
+			ephemeral = true
+		case "--expiration":
+			i++
+			if i < len(argv) {
+				expiration = argv[i]
+			}
+		}
+	}
+	userName := ""
+	for _, u := range f.state.Headscale.Users {
+		if u.ID == userID {
+			userName = u.Name
+		}
+	}
+	if userName == "" {
+		return "", fmt.Errorf("no such user: %s", userID)
+	}
+	d, err := parseSimpleDuration(expiration)
+	if err != nil {
+		return "", err
+	}
+	next := fmt.Sprintf("%d", len(f.state.Headscale.PreAuthKeys)+1)
+	f.state.Headscale.PreAuthKeys = append(f.state.Headscale.PreAuthKeys, PreAuthKey{
+		ID: next, User: userName, KeyPrefix: demoNewPreAuthKey[:10],
+		Reusable: reusable, Ephemeral: ephemeral,
+		Expiration: time.Now().Add(d), CreatedAt: time.Now(),
+	})
+	return demoNewPreAuthKey, nil
+}
+
+// parseSimpleDuration reads the integer-plus-unit durations ValidExpiration
+// accepts, including the d/w/y units time.ParseDuration does not know.
+func parseSimpleDuration(s string) (time.Duration, error) {
+	if !ValidExpiration(s) {
+		return 0, fmt.Errorf("not a valid expiration: %q", s)
+	}
+	n := 0
+	fmt.Sscanf(s[:len(s)-1], "%d", &n)
+	unit := map[byte]time.Duration{
+		's': time.Second, 'm': time.Minute, 'h': time.Hour,
+		'd': 24 * time.Hour, 'w': 7 * 24 * time.Hour, 'y': 365 * 24 * time.Hour,
+	}[s[len(s)-1]]
+	return time.Duration(n) * unit, nil
 }
 
 func (f *Fake) expireNode(id string) (string, error) {

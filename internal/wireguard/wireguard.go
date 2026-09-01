@@ -6,15 +6,20 @@
 //
 // This package is also the tool's single exec site: the only place a process
 // is started (through the kit runner) is internal/wireguard, so the command
-// the confirm dialog showed is provably the command that ran. It drives four
-// programs — `wg`, `wg-quick`, `headscale` and read-only `ip` — but every one
-// of them goes through the same runner boundary.
+// the confirm dialog showed is provably the command that ran. It drives six
+// programs — `wg`, `wg-quick`, `headscale`, read-only `ip`, and `sh`/`install`
+// for the interface-bootstrap flow — but every one of them goes through the
+// same runner boundary.
 //
 // PRIVACY: a private key never leaves this package on an argv or in any
-// rendered value. Adding a peer needs only its public key; a pre-shared key is
-// passed to `wg set` as a file path, never as a value on the command line
-// (a command line is visible in `ps` to every user on the machine). The model
-// records whether an interface has a private key, never the key itself.
+// rendered value. A new interface's key pair is generated inside one root
+// shell that writes the private key straight into a root-only file and prints
+// only the public key; the interface conf references that file through PostUp
+// instead of inlining the key. Adding a peer needs only its public key; a
+// pre-shared key is generated the same way and passed to `wg set` as a file
+// path, never as a value on the command line (a command line is visible in
+// `ps` to every user on the machine). The model records whether an interface
+// has a private key, never the key itself.
 package wireguard
 
 import (
@@ -195,6 +200,17 @@ const (
 	ActionExpireNode Action = "expire-node"
 	// ActionCreateUser creates a Headscale user.
 	ActionCreateUser Action = "create-user"
+	// ActionCreateInterface bootstraps a new WireGuard interface from zero:
+	// keygen, config file, optional up.
+	ActionCreateInterface Action = "create-interface"
+	// ActionSaveConfig persists an interface's runtime state with wg-quick save.
+	ActionSaveConfig Action = "save-config"
+	// ActionCreatePreAuthKey creates a Headscale pre-authentication key.
+	ActionCreatePreAuthKey Action = "create-preauthkey"
+	// ActionDeleteNode deletes a Headscale node.
+	ActionDeleteNode Action = "delete-node"
+	// ActionRenameNode renames a Headscale node.
+	ActionRenameNode Action = "rename-node"
 )
 
 // keyPattern is a WireGuard key on the wire: 43 base64 characters and a '='.
@@ -318,6 +334,214 @@ func BuildCreateUser(name string) (runner.Command, error) {
 		Description: "Create user " + name,
 	}, nil
 }
+
+// ConfPath is where wg-quick expects an interface's configuration file.
+func ConfPath(iface string) string { return "/etc/wireguard/" + iface + ".conf" }
+
+// KeyPath is where the tool keeps an interface's private key: a root-only file
+// next to the configuration, which `wg set … private-key` reads itself.
+func KeyPath(iface string) string { return "/etc/wireguard/" + iface + ".key" }
+
+// BuildGenerateInterfaceKey assembles the one command that creates a new
+// interface's key pair. The whole flow happens inside a single root shell at
+// the exec site: generate the private key, write it to a root-only file
+// (umask 077 makes it 600 before a byte lands), and print only the PUBLIC key.
+// The private key exists on disk for one purpose — `wg set` reads it from the
+// file — and never crosses back into the UI, an argv, or the screen.
+func BuildGenerateInterfaceKey(iface string) (runner.Command, error) {
+	if !ValidInterface(iface) {
+		return runner.Command{}, fmt.Errorf("not a valid interface name: %q", iface)
+	}
+	script := "umask 077 && wg genkey | tee " + KeyPath(iface) + " | wg pubkey"
+	return runner.Command{
+		Argv:        []string{"sh", "-c", script},
+		Description: "Generate key pair for " + iface,
+	}, nil
+}
+
+// InterfaceConf renders the configuration file for a freshly created
+// interface. The design decision worth a comment: the file contains NO private
+// key at all. Instead of writing `PrivateKey = …` (which would put a secret in
+// the preview, in this process's memory and in the dialog), the conf carries a
+// PostUp line — `wg set %i private-key /etc/wireguard/<if>.key` — so wg-quick
+// loads the key from its root-only file at up time. WireGuard supports this
+// natively, the whole conf is then safe to show in the confirm dialog, and the
+// key never exists anywhere but the file the root shell wrote it to.
+//
+// Note: a later `wg-quick save` rewrites this file from runtime state and does
+// inline the private key (root-only, mode 600) — standard wg-quick behaviour,
+// warned about in that action's confirm dialog.
+func InterfaceConf(iface, address string, listenPort int) (string, error) {
+	if !ValidInterface(iface) {
+		return "", fmt.Errorf("not a valid interface name: %q", iface)
+	}
+	if !ValidCIDR(address) {
+		return "", fmt.Errorf("not a valid CIDR address: %q", address)
+	}
+	if listenPort < 1 || listenPort > 65535 {
+		return "", fmt.Errorf("not a valid listen port: %d", listenPort)
+	}
+	return fmt.Sprintf(`[Interface]
+# The private key lives in %s (root, mode 600) and is loaded
+# at up time; this file deliberately contains no secret.
+Address = %s
+ListenPort = %d
+PostUp = wg set %%i private-key %s
+`, KeyPath(iface), address, listenPort, KeyPath(iface)), nil
+}
+
+// BuildWriteInterfaceConf assembles the install that writes the configuration
+// file. The content travels on stdin, never on the argv — not because it is
+// secret (with the PostUp design it is not), but because content on an argv is
+// one quoting bug away from being commands. `install -m 600` creates the file
+// with the right mode atomically instead of touch-then-chmod.
+func BuildWriteInterfaceConf(iface, conf string) (runner.Command, error) {
+	if !ValidInterface(iface) {
+		return runner.Command{}, fmt.Errorf("not a valid interface name: %q", iface)
+	}
+	if strings.TrimSpace(conf) == "" {
+		return runner.Command{}, fmt.Errorf("refusing to write an empty configuration")
+	}
+	if strings.Contains(conf, "PrivateKey") {
+		// The guard for the design above: no code path may ever compose a conf
+		// that inlines a private key.
+		return runner.Command{}, fmt.Errorf("refusing to write a configuration that inlines a private key")
+	}
+	return runner.Command{
+		Argv:        []string{"install", "-m", "600", "/dev/stdin", ConfPath(iface)},
+		Description: "Write " + ConfPath(iface),
+		Stdin:       conf,
+	}, nil
+}
+
+// BuildSaveConfig assembles `wg-quick save <iface>`, which persists the
+// runtime peers into the configuration file. It rewrites that file wholesale
+// (and inlines the private key, root-only), so it is marked destructive and
+// its dialog warns about it.
+func BuildSaveConfig(iface string) (runner.Command, error) {
+	if !ValidInterface(iface) {
+		return runner.Command{}, fmt.Errorf("not a valid interface name: %q", iface)
+	}
+	return runner.Command{
+		Argv:        []string{"wg-quick", "save", iface},
+		Description: "Save " + iface + " runtime config to " + ConfPath(iface),
+		Destructive: true,
+	}, nil
+}
+
+// PSKPath is the root-only file a generated pre-shared key is written to,
+// named after the interface and a filename-safe slice of the peer's public
+// key so two peers never collide.
+func PSKPath(iface, peerPublicKey string) string {
+	var b strings.Builder
+	for _, r := range peerPublicKey {
+		if b.Len() == 8 {
+			break
+		}
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return "/etc/wireguard/" + iface + "-" + b.String() + ".psk"
+}
+
+// BuildGeneratePSK assembles the root shell that generates a pre-shared key
+// into a root-only file. Like the interface key, the value never leaves the
+// exec site: only the file PATH does, and BuildAddPeer hands that path to
+// `wg set … preshared-key`, which opens the file itself.
+func BuildGeneratePSK(iface, peerPublicKey string) (runner.Command, error) {
+	if !ValidInterface(iface) {
+		return runner.Command{}, fmt.Errorf("not a valid interface name: %q", iface)
+	}
+	if !ValidPublicKey(peerPublicKey) {
+		return runner.Command{}, fmt.Errorf("not a valid public key")
+	}
+	path := PSKPath(iface, peerPublicKey)
+	script := "umask 077 && wg genpsk > " + path
+	return runner.Command{
+		Argv:        []string{"sh", "-c", script},
+		Description: "Generate pre-shared key file " + path,
+	}, nil
+}
+
+// BuildCreatePreAuthKey assembles `headscale preauthkeys create`. The created
+// key is printed once by headscale itself; the caller shows it once and never
+// stores it — the same contract headscale's own CLI has.
+func BuildCreatePreAuthKey(userID string, reusable, ephemeral bool, expiration string) (runner.Command, error) {
+	if !validID(userID) {
+		return runner.Command{}, fmt.Errorf("not a valid user id: %q", userID)
+	}
+	if expiration == "" {
+		expiration = "24h"
+	}
+	if !ValidExpiration(expiration) {
+		return runner.Command{}, fmt.Errorf("not a valid expiration (try 24h, 30m, 7d): %q", expiration)
+	}
+	argv := []string{"headscale", "preauthkeys", "create", "--user", userID}
+	if reusable {
+		argv = append(argv, "--reusable")
+	}
+	if ephemeral {
+		argv = append(argv, "--ephemeral")
+	}
+	argv = append(argv, "--expiration", expiration)
+	return runner.Command{
+		Argv:        argv,
+		Description: "Create pre-auth key for user " + userID,
+	}, nil
+}
+
+// BuildDeleteNode assembles `headscale nodes delete`. --force skips
+// headscale's own prompt because this tool's confirm dialog already is the
+// prompt, and a nested interactive question would hang the runner.
+func BuildDeleteNode(nodeID string) (runner.Command, error) {
+	if !validID(nodeID) {
+		return runner.Command{}, fmt.Errorf("not a valid node id: %q", nodeID)
+	}
+	return runner.Command{
+		Argv:        []string{"headscale", "nodes", "delete", "--identifier", nodeID, "--force"},
+		Description: "Delete node " + nodeID,
+		Destructive: true,
+	}, nil
+}
+
+// BuildRenameNode assembles `headscale nodes rename`.
+func BuildRenameNode(nodeID, name string) (runner.Command, error) {
+	if !validID(nodeID) {
+		return runner.Command{}, fmt.Errorf("not a valid node id: %q", nodeID)
+	}
+	if !ValidNodeName(name) {
+		return runner.Command{}, fmt.Errorf("not a valid node name: %q", name)
+	}
+	return runner.Command{
+		Argv:        []string{"headscale", "nodes", "rename", "--identifier", nodeID, name},
+		Description: "Rename node " + nodeID + " to " + name,
+	}, nil
+}
+
+// cidrPattern is an address with a mandatory /prefix: the Address= line of an
+// interface needs the prefix length, and the shape rules out anything that
+// could become a second argument or an ini injection.
+var cidrPattern = regexp.MustCompile(`^[0-9A-Fa-f:.]+/[0-9]{1,3}$`)
+
+// ValidCIDR reports whether s is a plausible address-with-prefix.
+func ValidCIDR(s string) bool {
+	return s != "" && !strings.HasPrefix(s, "-") && cidrPattern.MatchString(s)
+}
+
+// expirationPattern is a simple duration: an integer and one unit letter, the
+// forms headscale documents (30m, 24h, 7d…).
+var expirationPattern = regexp.MustCompile(`^[0-9]{1,5}[smhdwy]$`)
+
+// ValidExpiration reports whether s is a plausible pre-auth key expiration.
+func ValidExpiration(s string) bool { return expirationPattern.MatchString(s) }
+
+// nodeNamePattern is a DNS-label-shaped machine name, which is what headscale
+// accepts for a rename.
+var nodeNamePattern = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
+
+// ValidNodeName reports whether s is a plausible node name.
+func ValidNodeName(s string) bool { return nodeNamePattern.MatchString(s) }
 
 // validID reports whether s is a bare non-negative integer id.
 func validID(s string) bool {

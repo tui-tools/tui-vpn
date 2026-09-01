@@ -10,7 +10,7 @@ WireGuard and its control plane, from the terminal.
 
 tui-vpn reads the WireGuard interfaces on a host straight from `wg show all dump` — peers, endpoints, the latest handshake, transfer counters, allowed IPs and keepalive — and, when a self-hosted [Headscale](https://headscale.net) control plane is present, the users, nodes and pre-authentication keys that decide who is allowed onto the network.
 
-It is read-mostly. Bringing an interface up or down, adding or removing a peer, expiring a node, creating a user — every change is shown as the exact command line first and applied only after you confirm it. There is one place a process is ever started, `internal/wireguard`, so the command the dialog showed is provably the command that runs.
+It manages as well as reads. Creating an interface from zero, bringing one up or down, adding or removing a peer, saving the runtime config, expiring, renaming or deleting a node, creating a user or a pre-auth key — every change is shown as the exact command line first and applied only after you confirm it. There is one place a process is ever started, `internal/wireguard`, so the command the dialog showed is provably the command that runs.
 
 ## Identity is OIDC, not a web admin
 
@@ -32,11 +32,11 @@ tui-vpn --demo
 
 ![The status screen: WireGuard interfaces, their state and peer counts](docs/screenshots/tui-vpn-status.png)
 
-- **interfaces** — the WireGuard interfaces on this host, with peer counts and state. `u` / `d` bring one up or down.
-- **peers** — the peers of the selected interface: endpoint, handshake age, transfer, allowed-ips, keepalive. `a` / `x` add or remove a peer.
+- **interfaces** — the WireGuard interfaces on this host, with peer counts and state. `N` creates one from zero, `u` / `d` bring one up or down, `w` saves its runtime config.
+- **peers** — the peers of the selected interface: endpoint, handshake age, transfer, allowed-ips, keepalive. `a` / `x` add or remove a peer (end the add line with `psk` to also generate a pre-shared key file); `w` saves.
 - **users** — the Headscale users, and the provider they authenticate against. `n` creates one.
-- **nodes** — the machines registered with Headscale, who owns each, and key expiry. `e` expires one.
-- **preauth keys** — the keys that let a machine register itself, shown by prefix only.
+- **nodes** — the machines registered with Headscale, who owns each, and key expiry. `e` expires one, `m` renames one, `x` deletes one.
+- **preauth keys** — the keys that let a machine register itself, shown by prefix only. `n` creates one, shown exactly once.
 
 ![The peers screen: endpoints, handshake age and transfer for the selected interface](docs/screenshots/tui-vpn-peers.png)
 
@@ -45,6 +45,36 @@ tui-vpn --demo
 Every mutation opens a confirm dialog with the exact command before it runs.
 
 ![The help screen: keys, and how identity works over OIDC](docs/screenshots/tui-vpn-help.png)
+
+## Manage, not view
+
+Beyond up/down and peer add/remove, tui-vpn can bootstrap and maintain a WireGuard host — always through the same rule: preview the exact command, confirm, run.
+
+### Create an interface from zero (`N`)
+
+On an empty host, `N` on the interfaces screen walks a three-step wizard: name, address (CIDR) and listen port, then three previewed commands.
+
+1. **Keygen** — one root shell: `sh -c 'umask 077 && wg genkey | tee /etc/wireguard/<if>.key | wg pubkey'`. The private key is written straight into a root-only file inside that shell and never leaves it; only the public key comes back, shown so you can hand it to peers.
+2. **Write the conf** — the file is fed to `install -m 600 /dev/stdin /etc/wireguard/<if>.conf` on stdin, so its content never rides an argv. The conf deliberately contains **no private key**: it carries `PostUp = wg set %i private-key /etc/wireguard/<if>.key`, so wg-quick loads the key from its file at up time. That is why the confirm dialog can show you the whole file.
+3. **Bring it up** — the usual `wg-quick up`, optional; esc leaves the interface created but down.
+
+### Persist peer changes (`w`)
+
+`wg set` mutations are runtime-only. After a successful peer add or remove, tui-vpn offers `wg-quick save <if>`; `w` on the interfaces or peers screen offers it on demand. The dialog warns before you confirm: the save **rewrites** the conf from runtime state (hand-written comments are lost, and wg-quick inlines the private key into the root-only, mode 600 file — standard wg-quick behaviour).
+
+### Optional pre-shared key on add-peer
+
+End the add-peer line with `psk` and tui-vpn first previews a root shell that generates `wg genpsk` into a root-only file, then previews the add-peer command passing `wg` that file **path**. The key value never appears on a command line or on screen.
+
+### Pre-auth keys (`n` on the keys screen)
+
+Pick the owning user by id and optionally add the words `reusable`, `ephemeral` and an expiration like `30m`, `24h` or `7d` (default `24h`). The previewed command is `headscale preauthkeys create --user <id> [--reusable] [--ephemeral] --expiration <dur>`. Headscale prints the key once; tui-vpn shows it once in the status line with a "shown once — copy it now" note and never stores it. The list keeps showing prefixes only, like headscale's own CLI.
+
+### Node rename and delete (`m` / `x`)
+
+`m` renames the selected node (DNS-label names) via `headscale nodes rename --identifier <id> <name>`; `x` deletes it via `headscale nodes delete --identifier <id> --force` — `--force` because tui-vpn's own confirm dialog is the prompt, and it is painted as a danger dialog.
+
+All of the above works under `--demo` too, against the fake backend, with nothing installed and nothing changed.
 
 ## `--report`, for bug reports
 
