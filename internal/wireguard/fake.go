@@ -22,7 +22,11 @@ import (
 type Fake struct {
 	mu    sync.Mutex
 	state State
-	run   *runner.Fake
+	// config is the demo's /etc/headscale/config.yaml, kept as text so the
+	// control-plane flows are exercised for real: the diff the confirm dialog
+	// shows under --demo is computed by the same editor that runs on a router.
+	config string
+	run    *runner.Fake
 }
 
 // Demonstration keys. They are valid WireGuard key syntax (43 base64 characters
@@ -50,9 +54,60 @@ func DemoPeer2Pub() string { return demoPeer2Pub }
 // two peers — one mid-handshake, one that has never connected — and a Headscale
 // control plane with two users, three nodes and a pre-auth key.
 func NewFake() *Fake {
-	f := &Fake{state: demoState()}
+	f := &Fake{state: demoState(), config: demoHeadscaleConfig}
 	f.run = &runner.Fake{Hook: f.apply}
+	f.reloadControlPlane()
 	return f
+}
+
+// demoHeadscaleConfig is a plausible, already-configured headscale
+// configuration: enough of the real file's shape — comments, blank lines,
+// nested sections — that editing it in the demo proves the editor keeps
+// everything it does not touch. Every host in it is a documentation name.
+const demoHeadscaleConfig = `# headscale configuration (demo)
+
+server_url: https://vpn.example.com
+listen_addr: 0.0.0.0:8080
+metrics_listen_addr: 127.0.0.1:9090
+
+# The pre-shared key file for DERP, unrelated to OIDC.
+noise:
+  private_key_path: /var/lib/headscale/noise_private.key
+
+prefixes:
+  v4: 100.64.0.0/10
+
+oidc:
+  only_start_if_oidc_is_available: true
+  issuer: https://idp.example.com/realms/demo
+  client_id: headscale
+  client_secret_path: /etc/headscale/oidc_client_secret
+  scope: ["openid", "profile", "email"]
+  allowed_domains: ["example.com"]
+  allowed_groups: []
+  allowed_users: []
+  pkce:
+    enabled: true
+
+log:
+  level: info
+`
+
+// reloadControlPlane re-reads the demo's configuration into the state, the way
+// a reload on a real host would.
+func (f *Fake) reloadControlPlane() {
+	cp, err := ParseHeadscaleConfig([]byte(f.config))
+	if err != nil {
+		f.state.Headscale.ControlPlane = ControlPlane{
+			ConfigPath: HeadscaleConfigPath, Error: err.Error()}
+		return
+	}
+	cp.ServiceState = "active"
+	// The demo's unit runs headscale as its own user, which is the case the
+	// secret write has to get right: an `install` without -o would leave the
+	// service unable to read its own secret.
+	cp.ServiceUser, cp.ServiceGroup = "headscale", "headscale"
+	f.state.Headscale.ControlPlane = cp
 }
 
 // Name identifies the backend.
@@ -120,6 +175,21 @@ func (f *Fake) apply(cmd runner.Command) (string, error) {
 		return f.createPreAuthKey(argv)
 	case len(argv) == 4 && argv[0] == "headscale" && argv[1] == "users" && argv[2] == "create":
 		return f.createUser(argv[3])
+	case len(argv) == 3 && argv[0] == "sh" && argv[1] == "-c" &&
+		strings.Contains(argv[2], HeadscaleConfigPath):
+		return f.writeHeadscaleConfig(cmd.Stdin)
+	case len(argv) > 1 && argv[0] == "install" && argv[len(argv)-1] == OIDCClientSecretPath:
+		// The demo records that a secret exists and drops the value, which is
+		// exactly what the real flow does: nothing but the file ever holds it.
+		f.state.Headscale.ControlPlane.OIDC.ClientSecretSet = true
+		return "", nil
+	case len(argv) >= 4 && argv[0] == "systemctl" && argv[1] == "show":
+		return "User=headscale\nGroup=headscale", nil
+	case len(argv) == 3 && argv[0] == "systemctl" && argv[1] == "restart":
+		f.state.Headscale.ControlPlane.ServiceState = "active"
+		return "", nil
+	case len(argv) >= 2 && argv[0] == "curl":
+		return demoDiscoveryDocument, nil
 	default:
 		return "", fmt.Errorf("demo backend does not know how to apply %q", cmd.String())
 	}
@@ -216,6 +286,24 @@ func (f *Fake) writeConf(path, conf string) (string, error) {
 		FwMark:        "off",
 		Up:            false,
 	})
+	return "", nil
+}
+
+// demoDiscoveryDocument is what the demo's IdP answers to a discovery read.
+const demoDiscoveryDocument = `{"issuer":"https://idp.example.com/realms/demo",` +
+	`"authorization_endpoint":"https://idp.example.com/realms/demo/protocol/openid-connect/auth"}`
+
+// writeHeadscaleConfig applies the configuration write: the demo keeps the new
+// text and re-reads it, so the panel and the next diff both reflect it.
+func (f *Fake) writeHeadscaleConfig(content string) (string, error) {
+	if strings.TrimSpace(content) == "" {
+		return "", fmt.Errorf("refusing to write an empty configuration")
+	}
+	secretSet := f.state.Headscale.ControlPlane.OIDC.ClientSecretSet
+	f.config = content
+	f.reloadControlPlane()
+	f.state.Headscale.ControlPlane.OIDC.ClientSecretSet =
+		secretSet || f.state.Headscale.ControlPlane.OIDC.ClientSecretSet
 	return "", nil
 }
 
@@ -361,8 +449,8 @@ func demoState() State {
 			},
 		}},
 		Headscale: Headscale{
-			Present:        true,
-			OIDCConfigured: true,
+			Present:      true,
+			OIDCInferred: true,
 			Users: []User{
 				{ID: "1", Name: "ana", DisplayName: "Ana Ba", Email: "ana@example.com",
 					Provider: "oidc", ProviderID: "https://idp.example.com/ana",

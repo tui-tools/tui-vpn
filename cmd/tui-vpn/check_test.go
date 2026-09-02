@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"strings"
@@ -82,6 +83,79 @@ func TestRunCheckLeaksNoSecret(t *testing.T) {
 	} {
 		if strings.Contains(got, forbidden) {
 			t.Errorf("--check output leaks %q:\n%s", forbidden, got)
+		}
+	}
+}
+
+// TestCheckCarriesNoAddressOfThisHost is the promise the whole block is
+// written around, enforced rather than asserted in a comment. --check is
+// pasted into issues and scripts, so no URL and no address of this host may
+// survive into it — the two server_url questions are booleans and the OIDC
+// issuer is reduced to a host name.
+func TestCheckCarriesNoAddressOfThisHost(t *testing.T) {
+	var buf bytes.Buffer
+	backend := wireguard.NewFake()
+	if err := runCheck(t.Context(), backend, nil, &buf); err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	out := buf.String()
+
+	// Everything the demo's configuration holds that names a machine.
+	for _, forbidden := range []string{
+		"https://vpn.example.com",           // server_url
+		"https://idp.example.com",           // the issuer URL
+		"/realms/demo",                      // the issuer's path
+		"0.0.0.0:8080",                      // listen_addr
+		"/etc/headscale/oidc_client_secret", // the secret path
+	} {
+		if strings.Contains(out, forbidden) {
+			t.Errorf("--check carries %q", forbidden)
+		}
+	}
+	// A URL scheme anywhere in the block would mean one got through.
+	if strings.Contains(out, "://") {
+		t.Errorf("--check carries a URL:\n%s", out)
+	}
+
+	// What replaced them still answers the questions a report needs.
+	var report checkReport
+	if err := json.Unmarshal(buf.Bytes(), &report); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	cp := report.Headscale.ControlPlane
+	if !cp.ServerURLSet || !cp.ServerURLHTTPS || cp.ServerURLLoopback {
+		t.Errorf("the server_url booleans do not describe the demo: %+v", cp)
+	}
+	if cp.ListenPort != 8080 || cp.ListenLoopback {
+		t.Errorf("listen port = %d, loopback = %v", cp.ListenPort, cp.ListenLoopback)
+	}
+	if cp.OIDCIssuer != "idp.example.com" {
+		t.Errorf("oidcIssuer = %q, want the host alone", cp.OIDCIssuer)
+	}
+	if report.Headscale.OIDCIssuer != "idp.example.com" {
+		t.Errorf("headscale.oidcIssuer = %q, want the host alone",
+			report.Headscale.OIDCIssuer)
+	}
+}
+
+// TestCheckReportsAnUnreachableServerURL: the booleans have to catch the two
+// failures the URL was there to reveal.
+func TestCheckReportsAnUnreachableServerURL(t *testing.T) {
+	for _, tc := range []struct {
+		url             string
+		https, loopback bool
+	}{
+		{"https://vpn.example.com", true, false},
+		{"http://vpn.example.com", false, false},
+		{"https://127.0.0.1:8080", true, true},
+		{"http://localhost:8080", false, true},
+	} {
+		if got := wireguard.ServerURLIsHTTPS(tc.url); got != tc.https {
+			t.Errorf("%s: https = %v, want %v", tc.url, got, tc.https)
+		}
+		got := wireguard.IsLoopbackHost(wireguard.URLHost(tc.url))
+		if got != tc.loopback {
+			t.Errorf("%s: loopback = %v, want %v", tc.url, got, tc.loopback)
 		}
 	}
 }

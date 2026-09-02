@@ -11,10 +11,25 @@ came from:
 | `headscale-users.json` | **Constructed** from `headscale users list --output json` (the protojson form of the `User` message). Two OIDC users. |
 | `headscale-nodes.json` | **Constructed** from `headscale nodes list --output json`. Three nodes: one online, one offline, one already expired; two registered via OIDC, one via a pre-auth key. |
 | `headscale-preauthkeys.json` | **Constructed** from `headscale preauthkeys list --output json`. One reusable key. |
+| `headscale-config.yaml` | **Captured**, unmodified, from the `/etc/headscale/config.yaml` that headscale v0.29.3 ships in its own `.deb` (downloaded from the family mirror `tui-tools/headscale`, sha256 checked against the release `checksums.txt` and the release attestation verified). It is upstream's file, so it names nothing of this host. It is the fixture the control-plane editor is judged on: 494 lines, almost all comments, with the whole `oidc:` section commented out — the case where the section has to be created rather than spliced. |
 
-Headscale is not installed on this machine, so all three control-plane fixtures
-are constructed rather than captured. The first lab host with a real Headscale
-and an IdP should replace them with scrubbed captures.
+Headscale is not installed on this machine, so the three list fixtures are
+constructed rather than captured. The first lab host with a real Headscale and
+an IdP should replace them with scrubbed captures. `headscale-config.yaml` is
+the exception: it is upstream's own shipped file, taken from the release
+artifact.
+
+### How the config fixture was validated
+
+The lab router was offline when this landed, so the control-plane editor was
+validated against the real binary instead. The output of the edit this fixture
+drives — `TestEditRealHeadscaleConfig`, with the state paths and the secret
+path pointed at a temporary directory, since `configtest` opens both — was
+accepted by `headscale v0.29.3 configtest` with exit 0. Two failures on the way
+there were real headscale rules rather than editor bugs, and both are now
+guarded in the tool: `server_url` inside `dns.base_domain` (`BaseDomainConflict`),
+and a `client_secret_path` pointing at a file that does not exist yet, which is
+why the flow writes the secret file **before** it writes `config.yaml`.
 
 ## Keys and addresses
 

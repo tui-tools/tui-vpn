@@ -23,6 +23,7 @@ const (
 	modeBrowse mode = iota
 	modeConfirm
 	modeInput
+	modePicker
 	modeHelp
 )
 
@@ -40,6 +41,33 @@ const (
 	inputNewIfacePort
 	inputCreatePreAuthKey
 	inputRenameNode
+	// The server-settings form.
+	inputServerURL
+	inputListenAddr
+	// The OIDC form, in the order the fields are asked for.
+	inputOIDCIssuer
+	inputOIDCClientID
+	inputOIDCSecret
+	inputOIDCDomains
+	inputOIDCGroups
+	inputOIDCUsers
+	inputOIDCScope
+)
+
+// pickerPurpose records what an open picker is choosing. The two OIDC switches
+// are pickers rather than typed words so there is nothing to spell wrong.
+type pickerPurpose int
+
+const (
+	pickerNone pickerPurpose = iota
+	pickerOIDCOnlyStart
+	pickerOIDCPKCE
+)
+
+// pickerYes and pickerNo are the two options of a boolean picker.
+const (
+	pickerYes = "yes"
+	pickerNo  = "no"
 )
 
 // app is the Bubble Tea model.
@@ -57,13 +85,17 @@ type app struct {
 	cursor [wireguard.ScreenCount]int
 	offset [wireguard.ScreenCount]int
 
-	mode         mode
-	confirm      ui.Confirm
-	input        ui.Input
-	inputPurpose inputPurpose
+	mode          mode
+	confirm       ui.Confirm
+	input         ui.Input
+	inputPurpose  inputPurpose
+	picker        ui.Picker
+	pickerPurpose pickerPurpose
 
 	// draft collects the create-interface wizard's answers across its inputs.
 	draft struct{ name, address, port string }
+	// cpDraft collects the control-plane forms' answers across their steps.
+	cpDraft controlPlaneDraft
 	// after, when set, runs once on the next successful command result. It is
 	// how multi-step flows chain: keygen → write conf → offer up, and
 	// genpsk → add peer. Cancelling a confirm clears it.
@@ -199,6 +231,9 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, a.load()
 
+	case discoveredMsg:
+		return a, a.confirmOIDCChain(msg)
+
 	case tea.KeyMsg:
 		return a.handleKey(msg)
 	}
@@ -224,6 +259,8 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a.handleConfirm(msg)
 	case modeInput:
 		return a.handleInput(msg)
+	case modePicker:
+		return a.handlePicker(msg)
 	case modeHelp:
 		a.mode = modeBrowse
 		return a, nil
@@ -246,6 +283,9 @@ func (a *app) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Cancelling also abandons whatever step a chained flow would take
 		// next: nothing runs, so nothing may be waiting on its result.
 		a.after = nil
+		// A cancelled control-plane flow must not leave a typed secret sitting
+		// in this process's memory waiting for a flow that will never resume.
+		a.cpDraft.forgetSecret()
 		a.setStatus(ui.StatusInfo, "cancelled")
 		return a, nil
 	}
@@ -267,7 +307,16 @@ func (a *app) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	a.input = ui.Input{}
 	a.inputPurpose = inputNone
 	a.mode = modeBrowse
-	if !accepted || value == "" {
+	if !accepted {
+		// A cancelled control-plane form must not leave a typed secret behind.
+		a.cpDraft.forgetSecret()
+		a.setStatus(ui.StatusInfo, "cancelled")
+		return a, nil
+	}
+	// An empty answer means "cancel" for every input that names one thing, and
+	// "none" for the control-plane allow lists, where empty is a real answer.
+	if value == "" && !acceptsEmpty(purpose) {
+		a.cpDraft.forgetSecret()
 		a.setStatus(ui.StatusInfo, "cancelled")
 		return a, nil
 	}
@@ -287,6 +336,33 @@ func (a *app) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case inputRenameNode:
 		id, _ := payload.(string)
 		return a, a.openConfirm(wireguard.BuildRenameNode(id, value))
+	}
+	return a, a.handleControlPlaneInput(purpose, value)
+}
+
+// handlePicker resolves an open picker.
+func (a *app) handlePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	a.picker.Update(msg)
+	if !a.picker.Done {
+		return a, nil
+	}
+	accepted, choice := a.picker.Accepted, a.picker.Selected()
+	purpose := a.pickerPurpose
+	a.picker = ui.Picker{}
+	a.pickerPurpose = pickerNone
+	a.mode = modeBrowse
+	if !accepted {
+		a.cpDraft.forgetSecret()
+		a.setStatus(ui.StatusInfo, "cancelled")
+		return a, nil
+	}
+	switch purpose {
+	case pickerOIDCOnlyStart:
+		a.cpDraft.onlyStart = choice == pickerYes
+		return a, a.askOIDCPKCE()
+	case pickerOIDCPKCE:
+		a.cpDraft.pkce = choice == pickerYes
+		return a, a.discoverIssuer()
 	}
 	return a, nil
 }
@@ -389,7 +465,8 @@ func (a *app) handleActionKey(key string) tea.Cmd {
 			return nil
 		}
 	case wireguard.ScreenUsers:
-		if key == "n" {
+		switch key {
+		case "n":
 			if !a.state.Headscale.Present {
 				a.setStatus(ui.StatusWarn, "no control plane")
 				return nil
@@ -399,6 +476,10 @@ func (a *app) handleActionKey(key string) tea.Cmd {
 			a.inputPurpose = inputCreateUser
 			a.mode = modeInput
 			return nil
+		case "S":
+			return a.startServerSettings()
+		case "O":
+			return a.startOIDCSettings()
 		}
 	case wireguard.ScreenNodes:
 		switch key {

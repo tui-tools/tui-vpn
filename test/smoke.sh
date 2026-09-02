@@ -93,5 +93,53 @@ check "check --demo leaks no demo endpoint address" \
   "$bin --demo --check | grep -cE '198\.51\.100\.|192\.0\.2\.' || true" \
   '^0$'
 
+# --- the control-plane block -----------------------------------------------
+#
+# The configuration read is what turned `oidc: yes/no` from a guess into a
+# fact, so the block that carries it is smoked here. Under --demo it is the
+# sample configuration; on a real router it is /etc/headscale/config.yaml.
+check "check --demo carries the control-plane block" \
+  "$bin --demo --check" \
+  '"controlPlane"'
+
+# The server_url is answered as two booleans rather than printed: those are the
+# two ways an otherwise healthy setup fails, and neither names this host.
+check "check --demo answers the server_url questions" \
+  "$bin --demo --check" \
+  '"serverUrlHttps": true'
+
+check "check --demo says whether the server_url is loopback" \
+  "$bin --demo --check" \
+  '"serverUrlLoopback": false'
+
+check "check --demo reduces the OIDC issuer to its host" \
+  "$bin --demo --check" \
+  '"oidcIssuer": "idp\.example\.com"'
+
+# The whole promise, on the real read path this time: --check goes into public
+# issues, so a URL anywhere in it is a bug.
+check "check carries no URL of this host" \
+  "$bin --check | grep -c '://' || true" \
+  '^0$'
+
+check "check --demo carries no URL either" \
+  "$bin --demo --check | grep -c '://' || true" \
+  '^0$'
+
+check "check --demo keeps the inference as a separate field" \
+  "$bin --demo --check" \
+  '"oidcInferred":'
+
+# The whole point of writing the secret to its own file: --check can say that
+# one is set and has no field that could carry the value. A JSON key whose name
+# is client-secret-ish and whose value is a string would be a bug.
+check "check --demo reports the secret as set, never its value" \
+  "$bin --demo --check" \
+  '"oidcClientSecretSet": true'
+
+check "check --demo has no field that could hold a secret" \
+  "$bin --demo --check | grep -icE '\"(oidc)?[a-z]*clientsecret\": \"' || true" \
+  '^0$'
+
 echo "--- tui-vpn: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

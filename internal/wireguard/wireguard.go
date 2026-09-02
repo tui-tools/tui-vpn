@@ -6,10 +6,12 @@
 //
 // This package is also the tool's single exec site: the only place a process
 // is started (through the kit runner) is internal/wireguard, so the command
-// the confirm dialog showed is provably the command that ran. It drives six
-// programs — `wg`, `wg-quick`, `headscale`, read-only `ip`, and `sh`/`install`
-// for the interface-bootstrap flow — but every one of them goes through the
-// same runner boundary.
+// the confirm dialog showed is provably the command that ran. It drives a
+// handful of programs — `wg`, `wg-quick`, `headscale`, read-only `ip`,
+// `sh`/`install`/`cat` for the bootstrap and control-plane-configuration
+// flows, `systemctl` for the headscale unit, and `curl` for the one read that
+// leaves the machine (an IdP's discovery document) — but every one of them
+// goes through the same runner boundary.
 //
 // PRIVACY: a private key never leaves this package on an argv or in any
 // rendered value. A new interface's key pair is generated inside one root
@@ -112,15 +114,31 @@ type Headscale struct {
 	Present bool `json:"present"`
 	// Error carries why a present control plane could not be read.
 	Error string `json:"error,omitempty"`
-	// OIDCConfigured reports that user identity comes from an external
-	// OpenID Connect provider — inferred from a user carrying a provider, or a
-	// node that registered through OIDC. This is the whole point of the design:
-	// login happens in the client's browser against the IdP, and the server
-	// exposes no web admin of its own.
-	OIDCConfigured bool         `json:"oidcConfigured"`
-	Users          []User       `json:"users"`
-	Nodes          []Node       `json:"nodes"`
-	PreAuthKeys    []PreAuthKey `json:"preAuthKeys"`
+	// OIDCInferred reports that user identity looks like it comes from an
+	// external OpenID Connect provider — guessed from a user carrying a
+	// provider, or a node that registered through OIDC. It is the fallback
+	// answer, kept for the host whose config.yaml cannot be read; the honest
+	// answer comes from ControlPlane, and OIDCEnabled prefers it.
+	OIDCInferred bool `json:"oidcInferred"`
+	// ControlPlane is what /etc/headscale/config.yaml says: the URL clients
+	// reach this server on, and the IdP it federates identity to. This is the
+	// whole point of the design — login happens in the client's browser
+	// against the IdP, and the server exposes no web admin of its own — so it
+	// is also the one thing the tool has to be able to configure.
+	ControlPlane ControlPlane `json:"controlPlane"`
+	Users        []User       `json:"users"`
+	Nodes        []Node       `json:"nodes"`
+	PreAuthKeys  []PreAuthKey `json:"preAuthKeys"`
+}
+
+// OIDCEnabled is whether identity really is federated: read from the
+// configuration when it could be read, and only otherwise guessed from who has
+// logged in so far.
+func (h Headscale) OIDCEnabled() bool {
+	if h.ControlPlane.Readable {
+		return h.ControlPlane.OIDC.Configured()
+	}
+	return h.OIDCInferred
 }
 
 // User is a Headscale user. Its identity, when OIDC is configured, is owned by
@@ -211,6 +229,12 @@ const (
 	ActionDeleteNode Action = "delete-node"
 	// ActionRenameNode renames a Headscale node.
 	ActionRenameNode Action = "rename-node"
+	// ActionServerSettings writes server_url and listen_addr into headscale's
+	// configuration and restarts the service.
+	ActionServerSettings Action = "server-settings"
+	// ActionOIDCSettings writes the oidc section — and the client secret into
+	// its own root-only file — and restarts the service.
+	ActionOIDCSettings Action = "oidc-settings"
 )
 
 // keyPattern is a WireGuard key on the wire: 43 base64 characters and a '='.
