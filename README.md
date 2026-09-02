@@ -14,7 +14,9 @@ It manages as well as reads. Creating an interface from zero, bringing one up or
 
 ## Identity is OIDC, not a web admin
 
-User login is deliberately not in this tool. Identity is OpenID Connect, done in the client's own browser against your IdP; Headscale mirrors the users and nodes the IdP authorises. The Headscale server exposes no web admin, which is the whole point of the design — there is no console to log into, and tui-vpn does not pretend to be one. It reads the control plane's state and performs the few safe mutations, nothing more.
+User login is deliberately not in this tool. Identity is OpenID Connect, done in the client's own browser against your IdP; Headscale mirrors the users and nodes the IdP authorises. The Headscale server exposes no web admin, which is the whole point of the design — there is no console to log into, and tui-vpn does not pretend to be one.
+
+What tui-vpn does own is the *configuration* of that identity. See [Identity provider (OIDC)](#identity-provider-oidc) below: `S` and `O` on the users screen write `/etc/headscale/config.yaml` for you, previewing the exact lines they change.
 
 A private key is never shown, typed, or put on a command line. Adding a peer needs only its public key; a pre-shared key is passed to `wg` as a file it opens itself, never as an argument (a command line is visible in `ps` to every user on the machine).
 
@@ -34,11 +36,15 @@ tui-vpn --demo
 
 - **interfaces** — the WireGuard interfaces on this host, with peer counts and state. `N` creates one from zero, `u` / `d` bring one up or down, `w` saves its runtime config.
 - **peers** — the peers of the selected interface: endpoint, handshake age, transfer, allowed-ips, keepalive. `a` / `x` add or remove a peer (end the add line with `psk` to also generate a pre-shared key file); `w` saves.
-- **users** — the Headscale users, and the provider they authenticate against. `n` creates one.
+- **users** — the Headscale users, and the provider they authenticate against, under a panel showing what `/etc/headscale/config.yaml` says: `server_url`, `listen_addr`, the OIDC issuer and client id, whether a client secret is set, the allow lists, and the state of the `headscale` unit. `n` creates a user; `S` and `O` configure the control plane.
 - **nodes** — the machines registered with Headscale, who owns each, and key expiry. `e` expires one, `m` renames one, `x` deletes one.
 - **preauth keys** — the keys that let a machine register itself, shown by prefix only. `n` creates one, shown exactly once.
 
 ![The peers screen: endpoints, handshake age and transfer for the selected interface](docs/screenshots/tui-vpn-peers.png)
+
+![The users screen, under the control-plane panel: server_url, listen_addr, the OIDC issuer and client id, and that a client secret is set](docs/screenshots/tui-vpn-users.png)
+
+The panel is the answer to what the identity note used to leave hanging: which IdP, reachable at which URL, and whether a secret is set — never what it is.
 
 ![The Headscale nodes screen: who owns each node and its state, above the OIDC identity note](docs/screenshots/tui-vpn-headscale.png)
 
@@ -70,6 +76,38 @@ End the add-peer line with `psk` and tui-vpn first previews a root shell that ge
 
 Pick the owning user by id and optionally add the words `reusable`, `ephemeral` and an expiration like `30m`, `24h` or `7d` (default `24h`). The previewed command is `headscale preauthkeys create --user <id> [--reusable] [--ephemeral] --expiration <dur>`. Headscale prints the key once; tui-vpn shows it once in the status line with a "shown once — copy it now" note and never stores it. The list keeps showing prefixes only, like headscale's own CLI.
 
+### Server settings (`S` on the users screen)
+
+`S` asks for two values and writes them into `/etc/headscale/config.yaml`:
+
+- **`server_url`** — the base URL clients reach the control plane on, and the URL your IdP redirects a browser back to. tui-vpn warns when it is plain `http` (most IdPs refuse an http redirect URI) or points at loopback (a client's browser cannot reach it). It has to be reachable from the clients' own networks: [tui-cert](https://github.com/tui-tools/tui-cert) issues the certificate, [tui-firewall](https://github.com/tui-tools/tui-firewall) opens the port.
+- **`listen_addr`** — the address headscale binds. Loopback or an internal address when a reverse proxy terminates TLS in front of it, `0.0.0.0` when it does not.
+
+The confirm dialog shows a **diff of the changed lines and nothing else**, then the write, then `systemctl restart headscale` as a separate, optional confirm.
+
+### Identity provider (OIDC)
+
+`O` on the users screen configures the whole `oidc:` section: issuer URL, client id, client secret, allowed domains, allowed groups, allowed users, scope (`openid profile email` by default), `only_start_if_oidc_is_available` and `pkce.enabled`.
+
+**What is written where.** Two files, and only two:
+
+| File | What lands in it | Mode |
+| --- | --- | --- |
+| `/etc/headscale/config.yaml` | every OIDC setting **except** the secret, plus `client_secret_path` pointing at the file below | unchanged (the write truncates in place and keeps the existing owner and mode; a `.bak` copy is taken first) |
+| `/etc/headscale/oidc_client_secret` | the client secret, and nothing else | `600`, root, created atomically by `install -m 600` |
+
+**The secret is never shown.** It is typed with the echo masked, travels to the exec site on the command's **standard input** — never on an argv, which is visible in `ps` to every user on the machine — and is dropped from the tool's memory the moment the write command exists, cancelled flows included. It is not in the confirm dialog, not in the status line, not in the diff, and not in `config.yaml`: headscale reads it from the file through `client_secret_path`. The tool will not read it back either; the most it will ever say is `secret set`. When a secret is already configured, leaving the field empty keeps it, and typing a new one replaces it.
+
+A secret found sitting *inline* in `config.yaml` — someone else's setup, or an older one — is flagged in the panel and emptied by the next `O`, because headscale refuses to start with both a secret and a secret path, and because a credential has no business being in a configuration file. The diff redacts that line rather than printing it.
+
+**The diff is minimal, by construction.** `config.yaml` is not re-serialised: it is parsed only to *locate* each key, then spliced line by line, so comments, blank lines, key order and every section the change does not touch survive byte for byte. The lines the dialog shows are provably the only lines that differ.
+
+**The issuer is checked before saving.** tui-vpn fetches `<issuer>/.well-known/openid-configuration` with `curl` **from the server itself** — the machine that will have to reach the IdP — and reports what it found. A failure is a warning, not a refusal: an IdP that is down this minute is not a reason to be unable to write down its address.
+
+**Then a restart.** A configuration change does nothing until the unit that reads it restarts, so the flow ends with `systemctl restart headscale` as its own confirm. Esc there leaves the file written and the running server on the old settings.
+
+One caveat worth knowing: the secret file is `600 root`. If your headscale runs as a non-root user, `chown` it to that user after the first write.
+
 ### Node rename and delete (`m` / `x`)
 
 `m` renames the selected node (DNS-label names) via `headscale nodes rename --identifier <id> <name>`; `x` deletes it via `headscale nodes delete --identifier <id> --force` — `--force` because tui-vpn's own confirm dialog is the prompt, and it is painted as a danger dialog.
@@ -90,7 +128,11 @@ Prints the versions and machine facts a bug report needs and exits — no UI, no
 tui-vpn --check
 ```
 
-Reads the interfaces and the control plane once and prints a summary as JSON: interface and peer counts, per-peer handshake ages, whether Headscale is present, user and node counts, whether OIDC is configured, and a `compat` block naming each backend's version. Like `--report`, it carries no key, no endpoint and no address of the host — only counts and ages.
+Reads the interfaces and the control plane once and prints a summary as JSON: interface and peer counts, per-peer handshake ages, whether Headscale is present, user and node counts, and a `compat` block naming each backend's version.
+
+It also carries a `controlPlane` block read from `/etc/headscale/config.yaml`: `serverUrl`, `listenAddr`, `serviceState`, `oidcIssuer`, `oidcClientId`, whether a client secret is set, and the scope. `oidcConfigured` now comes from that configuration rather than being guessed; the older guess — inferred from users carrying a provider and nodes registered through OIDC — stays as `oidcInferred`, which is the answer used on a host whose `config.yaml` cannot be read.
+
+Like `--report`, it carries no key, no endpoint and no address of the host. The two URLs in the control-plane block are the deliberate exception: an "OIDC does not work" report is unanswerable without them, and both are URLs the clients' browsers are handed anyway. The allow lists are counted rather than printed, because they name people, and the client secret has no field at all.
 
 <!-- install:start -->
 <!-- Generated by tui-kit/tools/render-install.py from tool.json. -->
@@ -205,7 +247,7 @@ Available once the first release lands in pkgs.tui.tools.
 ### Any distribution, static binary — coming soon
 
 ```sh
-curl -fsSL https://github.com/tui-tools/tui-vpn/releases/download/v0.2.0/tui-vpn_0.2.0_linux_amd64.tar.gz | tar -xz tui-vpn
+curl -fsSL https://github.com/tui-tools/tui-vpn/releases/download/v0.2.1/tui-vpn_0.2.1_linux_amd64.tar.gz | tar -xz tui-vpn
 sudo install -m0755 tui-vpn /usr/local/bin/tui-vpn
 ```
 

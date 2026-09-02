@@ -93,5 +93,37 @@ check "check --demo leaks no demo endpoint address" \
   "$bin --demo --check | grep -cE '198\.51\.100\.|192\.0\.2\.' || true" \
   '^0$'
 
+# --- the control-plane block -----------------------------------------------
+#
+# The configuration read is what turned `oidc: yes/no` from a guess into a
+# fact, so the block that carries it is smoked here. Under --demo it is the
+# sample configuration; on a real router it is /etc/headscale/config.yaml.
+check "check --demo carries the control-plane block" \
+  "$bin --demo --check" \
+  '"controlPlane"'
+
+check "check --demo names the server URL" \
+  "$bin --demo --check" \
+  '"serverUrl": "https://vpn\.example\.com"'
+
+check "check --demo names the OIDC issuer" \
+  "$bin --demo --check" \
+  '"oidcIssuer": "https://idp\.example\.com'
+
+check "check --demo keeps the inference as a separate field" \
+  "$bin --demo --check" \
+  '"oidcInferred":'
+
+# The whole point of writing the secret to its own file: --check can say that
+# one is set and has no field that could carry the value. A JSON key whose name
+# is client-secret-ish and whose value is a string would be a bug.
+check "check --demo reports the secret as set, never its value" \
+  "$bin --demo --check" \
+  '"oidcClientSecretSet": true'
+
+check "check --demo has no field that could hold a secret" \
+  "$bin --demo --check | grep -icE '\"(oidc)?[a-z]*clientsecret\": \"' || true" \
+  '^0$'
+
 echo "--- tui-vpn: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

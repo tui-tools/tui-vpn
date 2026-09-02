@@ -24,9 +24,12 @@ const (
 // is OIDC in the client's own browser against the IdP.
 const controlPlaneNote = "identity: OIDC login in the client's browser against your IdP · the server has no web admin"
 
-// listHeight is the number of table rows that fit on screen.
+// listHeight is the number of table rows that fit on screen. The control-plane
+// panel is taller than the one-line note it replaces, so what it costs is
+// taken off the table rather than pushing the status line off the bottom.
 func (a *app) listHeight() int {
-	return max(a.height-headerLines-chromeLines, minListHeight)
+	extra := len(a.noteLines()) - 1
+	return max(a.height-headerLines-chromeLines-extra, minListHeight)
 }
 
 // View renders the whole screen.
@@ -36,6 +39,8 @@ func (a *app) View() string {
 		return a.confirm.View(a.theme, a.width, a.height)
 	case modeInput:
 		return a.input.View(a.theme, a.width, a.height)
+	case modePicker:
+		return a.picker.View(a.theme, a.width, a.height)
 	case modeHelp:
 		return lipgloss.Place(a.width, a.height, lipgloss.Center, lipgloss.Center,
 			ui.HelpScreen(a.theme, "tui-vpn — keys", helpKeys(), a.width))
@@ -60,18 +65,95 @@ func (a *app) browseView() string {
 		body = a.table()
 	}
 
-	note := a.noteLine()
+	note := strings.Join(a.noteLines(), "\n")
 	help := ui.HelpBar(a.theme, a.shortHelpKeys(), a.width)
 	status := ui.StatusLine(a.theme, a.statusKind, a.status, a.defaultStatus(), a.width)
 	return strings.Join([]string{a.header(), a.tabsView(), note, body, help, status}, "\n")
 }
 
-// noteLine is the control-plane identity note, or an empty line elsewhere.
-func (a *app) noteLine() string {
-	if a.onControlPlaneScreen() && a.state.Headscale.Present {
-		return a.theme.Muted.Render(ui.Truncate(controlPlaneNote, a.width))
+// noteLines is what sits between the tabs and the table: the identity note on
+// every control-plane screen, and above it — on the users screen, which is
+// where the control plane is configured from — the panel that answers what the
+// note used to leave hanging. "identity is OIDC" is only useful next to which
+// IdP, reachable at which URL.
+func (a *app) noteLines() []string {
+	if !a.onControlPlaneScreen() || !a.state.Headscale.Present {
+		return []string{""}
 	}
-	return ""
+	note := a.theme.Muted.Render(ui.Truncate(controlPlaneNote, a.width))
+	if a.screen != wireguard.ScreenUsers {
+		return []string{note}
+	}
+	lines := make([]string, 0, 6)
+	for _, line := range a.controlPlanePanel() {
+		lines = append(lines, a.theme.Muted.Render(ui.Truncate(line, a.width)))
+	}
+	return append(lines, note)
+}
+
+// controlPlanePanel renders what /etc/headscale/config.yaml says. It is plain
+// text rather than a table because these are facts about one thing, not rows.
+func (a *app) controlPlanePanel() []string {
+	cp := a.state.Headscale.ControlPlane
+	head := "control plane · " + orDash(cp.ConfigPath)
+	if cp.ServiceState != "" {
+		head += " · headscale " + cp.ServiceState
+	}
+	if !cp.Readable {
+		reason := cp.Error
+		if reason == "" {
+			reason = "not read"
+		}
+		return []string{head, "  " + reason + " — it must be readable before it can be edited"}
+	}
+	oidc := cp.OIDC
+	server := "  server_url  " + orDash(cp.ServerURL) +
+		"   listen_addr " + orDash(cp.ListenAddr)
+	if a.serverURLWarning(cp.ServerURL) != "" {
+		server += "   ⚠"
+	}
+	return []string{
+		head,
+		server,
+		"  oidc        issuer " + orDash(oidc.Issuer) +
+			" · client_id " + orDash(oidc.ClientID) + " · " + secretState(oidc),
+		"  allowed     domains " + listOrDash(oidc.AllowedDomains) +
+			" · groups " + listOrDash(oidc.AllowedGroups) +
+			" · users " + listOrDash(oidc.AllowedUsers),
+		"  scope       " + listOrDash(oidc.Scope) +
+			" · pkce " + onOff(oidc.PKCE) +
+			" · only_start_if_oidc_is_available " + yesNo(oidc.OnlyStartIfAvailable),
+	}
+}
+
+// secretState says whether a client secret is configured, and never more than
+// that. An inline secret is called out: it is readable by everyone who can read
+// config.yaml, which is the reason this tool writes it to its own file.
+func secretState(o wireguard.OIDCConfig) string {
+	switch {
+	case o.ClientSecretInline:
+		return "secret INLINE in config.yaml — replace it with O"
+	case o.ClientSecretSet:
+		return "secret set (" + orDash(o.ClientSecretPath) + ")"
+	default:
+		return "secret not set"
+	}
+}
+
+// listOrDash renders a list compactly, or a dash when it is empty.
+func listOrDash(items []string) string {
+	if len(items) == 0 {
+		return "-"
+	}
+	return strings.Join(items, " ")
+}
+
+// onOff renders a boolean as a switch.
+func onOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
 }
 
 // onControlPlaneScreen reports whether the current tab is a Headscale one.
@@ -112,7 +194,7 @@ func (a *app) header() string {
 		facts = append(facts,
 			ui.Fact{Label: "users", Value: strconv.Itoa(len(hs.Users))},
 			ui.Fact{Label: "nodes", Value: strconv.Itoa(len(hs.Nodes))},
-			ui.Fact{Label: "oidc", Value: yesNo(hs.OIDCConfigured)})
+			ui.Fact{Label: "oidc", Value: yesNo(hs.OIDCEnabled())})
 	} else {
 		facts = append(facts, ui.Fact{Label: "headscale", Value: "absent"})
 	}
@@ -478,7 +560,8 @@ func (a *app) shortHelpKeys() []ui.KeyHint {
 			ui.KeyHint{Key: "a", Desc: "add"}, ui.KeyHint{Key: "x", Desc: "remove"},
 			ui.KeyHint{Key: "w", Desc: "save"})
 	case wireguard.ScreenUsers:
-		hints = append(hints, ui.KeyHint{Key: "n", Desc: "new user"})
+		hints = append(hints, ui.KeyHint{Key: "n", Desc: "new user"},
+			ui.KeyHint{Key: "S", Desc: "server"}, ui.KeyHint{Key: "O", Desc: "oidc"})
 	case wireguard.ScreenNodes:
 		hints = append(hints,
 			ui.KeyHint{Key: "e", Desc: "expire"}, ui.KeyHint{Key: "m", Desc: "rename"},
@@ -510,9 +593,15 @@ func helpKeys() []ui.KeyHint {
 		{Key: "", Desc: "to also generate a pre-shared key file)"},
 		{Key: "n", Desc: "create a Headscale user (users) / pre-auth key (keys)"},
 		{Key: "e / m / x", Desc: "expire / rename / delete the selected node"},
+		{Key: "S", Desc: "server settings (users): server_url and listen_addr in"},
+		{Key: "", Desc: "/etc/headscale/config.yaml, then a restart"},
+		{Key: "O", Desc: "identity provider (users): issuer, client id, secret,"},
+		{Key: "", Desc: "allow lists, scope, pkce — then a restart"},
 		{Key: "", Desc: ""},
 		{Key: "identity", Desc: "login is OIDC in the client's browser against your IdP;"},
-		{Key: "", Desc: "the Headscale server exposes no web admin, by design"},
+		{Key: "", Desc: "the Headscale server exposes no web admin, by design."},
+		{Key: "", Desc: "The client secret is typed masked, written to a root-only"},
+		{Key: "", Desc: "file, and never shown again — not even to you"},
 		{Key: "", Desc: ""},
 		{Key: "note", Desc: "every change is previewed and confirmed first"},
 		{Key: "keys", Desc: "a private key is never shown, typed, or put on a command line"},

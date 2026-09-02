@@ -20,9 +20,20 @@ var searchPaths = map[string][]string{
 	// sh and install exist for the interface-bootstrap flow: the key pair is
 	// generated inside one root shell so the private key never leaves the exec
 	// site, and the conf file arrives on install's stdin so content never
-	// rides an argv.
+	// rides an argv. They serve the control-plane configuration flow the same
+	// way: config.yaml on stdin, the OIDC client secret on install's.
 	"sh":      {"/bin/sh", "/usr/bin/sh"},
 	"install": {"/usr/bin/install", "/bin/install"},
+	// cat is the escalated read of /etc/headscale/config.yaml, which is
+	// root-only on every distribution that packages headscale.
+	"cat": {"/usr/bin/cat", "/bin/cat"},
+	// systemctl reads the headscale unit's state and restarts it after a
+	// configuration change.
+	"systemctl": {"/usr/bin/systemctl", "/bin/systemctl"},
+	// curl makes the one request this tool ever sends off the machine: the
+	// IdP's discovery document, fetched from the router itself because the
+	// router is what will have to reach the IdP.
+	"curl": {"/usr/bin/curl", "/bin/curl"},
 }
 
 // privilegedRead marks the binaries whose reads need root. Reading a WireGuard
@@ -32,7 +43,20 @@ var privilegedRead = map[string]bool{
 	"wg":        true,
 	"headscale": true,
 	"ip":        false,
+	// config.yaml is root-only, so its read escalates like wg's does.
+	"cat": true,
+	// systemctl's reads are unprivileged; only its verbs are not.
+	"systemctl": false,
+	// curl reads the public internet, which needs no privilege at all.
+	"curl": false,
 }
+
+// neverEscalate marks the binaries that must run as the invoking user even
+// when they are not a Read. There is one: `curl`, whose only use here is
+// fetching an IdP's public discovery document. Nothing about that needs root,
+// and a preview reading `sudo -n curl …` would be asking for a privilege the
+// command has no business having.
+var neverEscalate = map[string]bool{"curl": true}
 
 // installHints tell a user what to install when a binary is missing.
 var installHints = map[string]string{
@@ -40,6 +64,7 @@ var installHints = map[string]string{
 	"wg-quick":  "install wireguard-tools",
 	"headscale": "install headscale, or run without a control plane",
 	"ip":        "install iproute2",
+	"curl":      "install curl to validate an OIDC issuer",
 }
 
 // Real is the backend that drives the machine. It is the tool's only exec site:
@@ -97,10 +122,14 @@ func (r *Real) runnerFor(bin string) (*runner.Runner, error) {
 		return nil, err
 	}
 	priv := privilegedRead[bin]
+	sudo := r.sudo
+	if neverEscalate[bin] {
+		sudo = nil
+	}
 	run, err := runner.New(runner.Options{
 		Bin:             bin,
 		SearchPaths:     searchPaths[bin],
-		SudoPrefix:      r.sudo,
+		SudoPrefix:      sudo,
 		PrivilegedReads: &priv,
 		InstallHint:     installHints[bin],
 	})
@@ -192,6 +221,9 @@ func (r *Real) loadHeadscale(ctx context.Context, state *State) {
 		return
 	}
 	hs := Headscale{Present: true}
+	// The configuration is read first: it is the one part of the control plane
+	// that still has an answer when headscale's own socket does not.
+	hs.ControlPlane = r.loadControlPlane(ctx)
 
 	usersOut, err := run.Read(ctx, "headscale", "users", "list", "--output", "json")
 	if err != nil {
@@ -215,8 +247,49 @@ func (r *Real) loadHeadscale(ctx context.Context, state *State) {
 		}
 	}
 
-	hs.OIDCConfigured = InferOIDC(hs.Users, hs.Nodes)
+	hs.OIDCInferred = InferOIDC(hs.Users, hs.Nodes)
 	state.Headscale = hs
+}
+
+// loadControlPlane reads headscale's own configuration and the state of its
+// unit. Neither is fatal: a host where config.yaml cannot be read still shows
+// its users and nodes, and says why the control-plane panel is empty.
+func (r *Real) loadControlPlane(ctx context.Context) ControlPlane {
+	cp := ControlPlane{ConfigPath: HeadscaleConfigPath}
+
+	run, err := r.runnerFor("cat")
+	if err != nil {
+		cp.Error = runner.FirstLine(err.Error())
+		return cp
+	}
+	out, err := run.Read(ctx, "cat", HeadscaleConfigPath)
+	if err != nil {
+		cp.Error = runner.FirstLine(err.Error())
+		return cp
+	}
+	parsed, err := ParseHeadscaleConfig([]byte(out))
+	if err != nil {
+		cp.Error = runner.FirstLine(err.Error())
+		return cp
+	}
+	cp = parsed
+	cp.ServiceState = r.serviceState(ctx)
+	return cp
+}
+
+// serviceState asks systemd what the headscale unit is doing. `is-active`
+// exits non-zero for every answer but "active", which is a state, not a
+// failure: the word it printed is the answer either way.
+func (r *Real) serviceState(ctx context.Context) string {
+	run, err := r.runnerFor("systemctl")
+	if err != nil {
+		return "unknown"
+	}
+	out, _ := run.Read(ctx, "systemctl", "is-active", HeadscaleService)
+	if state := strings.TrimSpace(runner.FirstLine(out)); state != "" {
+		return state
+	}
+	return "unknown"
 }
 
 // HostFact is a set of unprivileged facts about this host, for --report. None
