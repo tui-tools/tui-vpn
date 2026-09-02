@@ -20,12 +20,15 @@ const checkTimeout = 30 * time.Second
 // carries no public key, no endpoint and no address of this host — only how
 // many of each thing there are and how long ago each peer last shook hands.
 //
-// The control-plane block is the one deliberate exception, and a narrow one:
-// server_url and the OIDC issuer are printed because they are the two values
-// an "OIDC does not work" report is unanswerable without, and because both are
-// URLs the clients' own browsers are given anyway. The allow lists are counted
-// rather than printed — they name people — and the client secret has no field
-// at all, only the fact that one is set.
+// The control-plane block keeps that promise too, which took a second pass to
+// get right. An "OIDC does not work" report needs to know whether server_url
+// is https and whether it points at loopback — those are the two failures — but
+// it does not need the URL, which names this host. So the two questions are
+// answered as booleans and the URL stays here. The OIDC issuer is reduced to
+// its host: enough to say which IdP, without the realm and path that describe
+// somebody's internal layout. The allow lists are counted rather than printed,
+// because they name people, and the client secret has no field at all, only
+// the fact that one is set.
 type checkReport struct {
 	Tool     string `json:"tool"`
 	Version  string `json:"version"`
@@ -76,7 +79,8 @@ type hsSummary struct {
 	// OIDCInferred is the older, weaker answer — guessed from who has logged
 	// in — kept as the fallback for a host whose config.yaml cannot be read.
 	OIDCInferred bool `json:"oidcInferred"`
-	// OIDCIssuer is the IdP the control plane federates to.
+	// OIDCIssuer is the HOST of the IdP the control plane federates to, never
+	// the whole issuer URL.
 	OIDCIssuer   string    `json:"oidcIssuer,omitempty"`
 	ControlPlane cpSummary `json:"controlPlane"`
 	Users        int       `json:"users"`
@@ -92,14 +96,29 @@ type cpSummary struct {
 	ConfigPath   string `json:"configPath"`
 	Readable     bool   `json:"readable"`
 	Error        string `json:"error,omitempty"`
-	ServerURL    string `json:"serverUrl,omitempty"`
-	ListenAddr   string `json:"listenAddr,omitempty"`
 	ServiceState string `json:"serviceState,omitempty"`
+	// ServerURLSet reports that a server_url is configured at all.
+	ServerURLSet bool `json:"serverUrlSet"`
+	// ServerURLHTTPS and ServerURLLoopback are what the URL itself is not
+	// printed for: whether it is https, which most IdPs require of a redirect
+	// target, and whether it points at loopback, which no client's browser can
+	// reach. Those are the two ways an otherwise healthy setup fails, and
+	// answering them as booleans says nothing about where this host lives.
+	ServerURLHTTPS    bool `json:"serverUrlHttps"`
+	ServerURLLoopback bool `json:"serverUrlLoopback"`
 	// ServerURLWarning names the reason a browser-based OIDC login cannot work
-	// against this server_url, when there is one.
+	// against this server_url, when there is one. It is a fixed explanation
+	// and never quotes the URL.
 	ServerURLWarning string `json:"serverUrlWarning,omitempty"`
-	OIDCIssuer       string `json:"oidcIssuer,omitempty"`
-	OIDCClientID     string `json:"oidcClientId,omitempty"`
+	// ListenPort and ListenLoopback replace listen_addr for the same reason:
+	// a bind address can name an internal interface of this machine, while
+	// the port and "is it only listening to itself" are the useful halves.
+	ListenPort     int  `json:"listenPort"`
+	ListenLoopback bool `json:"listenLoopback"`
+	// OIDCIssuer is the issuer's HOST, not the issuer URL: which IdP, without
+	// the realm and path that describe somebody's internal layout.
+	OIDCIssuer   string `json:"oidcIssuer,omitempty"`
+	OIDCClientID string `json:"oidcClientId,omitempty"`
 	// OIDCClientSecretSet reports that a secret is configured, never what it
 	// is; OIDCClientSecretInline reports the case worth fixing, where it sits
 	// in config.yaml instead of its own root-only file.
@@ -174,16 +193,19 @@ func summariseHS(hs wireguard.Headscale) hsSummary {
 		Error:          hs.Error,
 		OIDCConfigured: hs.OIDCEnabled(),
 		OIDCInferred:   hs.OIDCInferred,
-		OIDCIssuer:     cp.OIDC.Issuer,
+		OIDCIssuer:     wireguard.URLHost(cp.OIDC.Issuer),
 		ControlPlane: cpSummary{
 			ConfigPath:             cp.ConfigPath,
 			Readable:               cp.Readable,
 			Error:                  cp.Error,
-			ServerURL:              cp.ServerURL,
-			ListenAddr:             cp.ListenAddr,
 			ServiceState:           cp.ServiceState,
+			ServerURLSet:           cp.ServerURL != "",
+			ServerURLHTTPS:         wireguard.ServerURLIsHTTPS(cp.ServerURL),
+			ServerURLLoopback:      wireguard.IsLoopbackHost(wireguard.URLHost(cp.ServerURL)),
 			ServerURLWarning:       wireguard.ServerURLWarning(cp.ServerURL),
-			OIDCIssuer:             cp.OIDC.Issuer,
+			ListenPort:             wireguard.ListenPort(cp.ListenAddr),
+			ListenLoopback:         wireguard.IsLoopbackHost(wireguard.ListenHost(cp.ListenAddr)),
+			OIDCIssuer:             wireguard.URLHost(cp.OIDC.Issuer),
 			OIDCClientID:           cp.OIDC.ClientID,
 			OIDCClientSecretSet:    cp.OIDC.ClientSecretSet,
 			OIDCClientSecretInline: cp.OIDC.ClientSecretInline,

@@ -94,7 +94,7 @@ The confirm dialog shows a **diff of the changed lines and nothing else**, then 
 | File | What lands in it | Mode |
 | --- | --- | --- |
 | `/etc/headscale/config.yaml` | every OIDC setting **except** the secret, plus `client_secret_path` pointing at the file below | unchanged (the write truncates in place and keeps the existing owner and mode; a `.bak` copy is taken first) |
-| `/etc/headscale/oidc_client_secret` | the client secret, and nothing else | `600`, root, created atomically by `install -m 600` |
+| `/etc/headscale/oidc_client_secret` | the client secret, and nothing else | `600`, owned by the account the `headscale` unit runs as, created atomically by `install -o … -g … -m 600` |
 
 **The secret is never shown.** It is typed with the echo masked, travels to the exec site on the command's **standard input** — never on an argv, which is visible in `ps` to every user on the machine — and is dropped from the tool's memory the moment the write command exists, cancelled flows included. It is not in the confirm dialog, not in the status line, not in the diff, and not in `config.yaml`: headscale reads it from the file through `client_secret_path`. The tool will not read it back either; the most it will ever say is `secret set`. When a secret is already configured, leaving the field empty keeps it, and typing a new one replaces it.
 
@@ -106,7 +106,7 @@ A secret found sitting *inline* in `config.yaml` — someone else's setup, or an
 
 **Then a restart.** A configuration change does nothing until the unit that reads it restarts, so the flow ends with `systemctl restart headscale` as its own confirm. Esc there leaves the file written and the running server on the old settings.
 
-One caveat worth knowing: the secret file is `600 root`. If your headscale runs as a non-root user, `chown` it to that user after the first write.
+**The secret file is owned by the service, not by root.** tui-vpn reads `systemctl show headscale -p User -p Group` and hands the file to that account in the same previewed `install`, so there is no second step and no window in which the ownership is wrong. It matters because the packages disagree: the `.deb`'s unit runs headscale as root, while the Arch package runs it as its own `headscale` user — and a root-only secret file would leave that service unable to read its own credential and unable to come back from the restart at the end of the flow. A unit that names no user gets `root:root`, which is what systemd would have used anyway. The mode stays `600` in every case: the owner is what changes, so the file is readable by exactly one account either way. The panel shows which account that is, next to the unit's state.
 
 ### Node rename and delete (`m` / `x`)
 
@@ -130,9 +130,17 @@ tui-vpn --check
 
 Reads the interfaces and the control plane once and prints a summary as JSON: interface and peer counts, per-peer handshake ages, whether Headscale is present, user and node counts, and a `compat` block naming each backend's version.
 
-It also carries a `controlPlane` block read from `/etc/headscale/config.yaml`: `serverUrl`, `listenAddr`, `serviceState`, `oidcIssuer`, `oidcClientId`, whether a client secret is set, and the scope. `oidcConfigured` now comes from that configuration rather than being guessed; the older guess — inferred from users carrying a provider and nodes registered through OIDC — stays as `oidcInferred`, which is the answer used on a host whose `config.yaml` cannot be read.
+It also carries a `controlPlane` block read from `/etc/headscale/config.yaml`: `serviceState`, `oidcClientId`, the scope, whether a client secret is set, and the answers below. `oidcConfigured` now comes from that configuration rather than being guessed; the older guess — inferred from users carrying a provider and nodes registered through OIDC — stays as `oidcInferred`, which is the answer used on a host whose `config.yaml` cannot be read.
 
-Like `--report`, it carries no key, no endpoint and no address of the host. The two URLs in the control-plane block are the deliberate exception: an "OIDC does not work" report is unanswerable without them, and both are URLs the clients' browsers are handed anyway. The allow lists are counted rather than printed, because they name people, and the client secret has no field at all.
+Like `--report`, it carries **no key, no endpoint, no URL and no address of the host** — and the control-plane block is no exception. What an "OIDC does not work" report actually needs is the two ways the setup fails, not the URL that names your server, so:
+
+| Instead of | `--check` prints |
+| --- | --- |
+| `server_url` | `serverUrlSet`, `serverUrlHttps` and `serverUrlLoopback` — the two questions worth asking, as booleans |
+| `listen_addr` | `listenPort` and `listenLoopback`, because a bind address can name an internal interface |
+| the OIDC issuer URL | `oidcIssuer`, reduced to the issuer's **host name** — which IdP, without the realm and path that describe your internal layout |
+
+The allow lists are counted rather than printed, because they name people, and the client secret has no field at all — only `oidcClientSecretSet`. `test/smoke.sh` asserts that no `://` survives anywhere in the output.
 
 <!-- install:start -->
 <!-- Generated by tui-kit/tools/render-install.py from tool.json. -->

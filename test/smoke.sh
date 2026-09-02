@@ -102,13 +102,29 @@ check "check --demo carries the control-plane block" \
   "$bin --demo --check" \
   '"controlPlane"'
 
-check "check --demo names the server URL" \
+# The server_url is answered as two booleans rather than printed: those are the
+# two ways an otherwise healthy setup fails, and neither names this host.
+check "check --demo answers the server_url questions" \
   "$bin --demo --check" \
-  '"serverUrl": "https://vpn\.example\.com"'
+  '"serverUrlHttps": true'
 
-check "check --demo names the OIDC issuer" \
+check "check --demo says whether the server_url is loopback" \
   "$bin --demo --check" \
-  '"oidcIssuer": "https://idp\.example\.com'
+  '"serverUrlLoopback": false'
+
+check "check --demo reduces the OIDC issuer to its host" \
+  "$bin --demo --check" \
+  '"oidcIssuer": "idp\.example\.com"'
+
+# The whole promise, on the real read path this time: --check goes into public
+# issues, so a URL anywhere in it is a bug.
+check "check carries no URL of this host" \
+  "$bin --check | grep -c '://' || true" \
+  '^0$'
+
+check "check --demo carries no URL either" \
+  "$bin --demo --check | grep -c '://' || true" \
+  '^0$'
 
 check "check --demo keeps the inference as a separate field" \
   "$bin --demo --check" \

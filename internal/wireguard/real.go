@@ -274,7 +274,21 @@ func (r *Real) loadControlPlane(ctx context.Context) ControlPlane {
 	}
 	cp = parsed
 	cp.ServiceState = r.serviceState(ctx)
+	cp.ServiceUser, cp.ServiceGroup = r.serviceAccount(ctx)
 	return cp
+}
+
+// serviceAccount asks systemd which account the headscale unit runs as. It is
+// what the client secret file must be owned by: the deb's unit runs as root,
+// the Arch package's runs headscale as its own user, and a file the service
+// cannot read is a service that will not come back from the restart.
+func (r *Real) serviceAccount(ctx context.Context) (user, group string) {
+	run, err := r.runnerFor("systemctl")
+	if err != nil {
+		return DefaultServiceUser, DefaultServiceUser
+	}
+	out, _ := run.Read(ctx, ServiceAccountProperties()...)
+	return ParseServiceAccount(out)
 }
 
 // serviceState asks systemd what the headscale unit is doing. `is-active`

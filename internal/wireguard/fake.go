@@ -103,6 +103,10 @@ func (f *Fake) reloadControlPlane() {
 		return
 	}
 	cp.ServiceState = "active"
+	// The demo's unit runs headscale as its own user, which is the case the
+	// secret write has to get right: an `install` without -o would leave the
+	// service unable to read its own secret.
+	cp.ServiceUser, cp.ServiceGroup = "headscale", "headscale"
 	f.state.Headscale.ControlPlane = cp
 }
 
@@ -174,11 +178,13 @@ func (f *Fake) apply(cmd runner.Command) (string, error) {
 	case len(argv) == 3 && argv[0] == "sh" && argv[1] == "-c" &&
 		strings.Contains(argv[2], HeadscaleConfigPath):
 		return f.writeHeadscaleConfig(cmd.Stdin)
-	case len(argv) == 5 && argv[0] == "install" && argv[4] == OIDCClientSecretPath:
+	case len(argv) > 1 && argv[0] == "install" && argv[len(argv)-1] == OIDCClientSecretPath:
 		// The demo records that a secret exists and drops the value, which is
 		// exactly what the real flow does: nothing but the file ever holds it.
 		f.state.Headscale.ControlPlane.OIDC.ClientSecretSet = true
 		return "", nil
+	case len(argv) >= 4 && argv[0] == "systemctl" && argv[1] == "show":
+		return "User=headscale\nGroup=headscale", nil
 	case len(argv) == 3 && argv[0] == "systemctl" && argv[1] == "restart":
 		f.state.Headscale.ControlPlane.ServiceState = "active"
 		return "", nil

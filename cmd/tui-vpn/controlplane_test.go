@@ -181,6 +181,19 @@ func TestOIDCFlowNeverShowsTheSecret(t *testing.T) {
 	if !strings.Contains(a.confirm.Command, wireguard.OIDCClientSecretPath) {
 		t.Errorf("preview = %q, want the secret write", a.confirm.Command)
 	}
+	// The demo's unit runs headscale as its own user, so the previewed write
+	// has to hand the file to that account: a root-only secret is one the
+	// service cannot read after the restart two steps later.
+	if !strings.Contains(a.confirm.Command, "-o headscale -g headscale") {
+		t.Errorf("preview = %q, want the file owned by the service account",
+			a.confirm.Command)
+	}
+	if !strings.Contains(a.confirm.Command, "-m 600") {
+		t.Errorf("preview = %q, want mode 600", a.confirm.Command)
+	}
+	if !strings.Contains(a.confirm.Body, "headscale:headscale") {
+		t.Errorf("the dialog does not say who will own the file:\n%s", a.confirm.Body)
+	}
 	assertNoSecret(t, a, secret, "the secret-write dialog")
 	a = confirmAndRun(t, a)
 
@@ -383,5 +396,15 @@ func TestConfigWriteIsRefusedWhenUnreadable(t *testing.T) {
 		if !strings.Contains(a.status, "permission denied") {
 			t.Errorf("%s: status = %q, want the reason", k, a.status)
 		}
+	}
+}
+
+// TestPanelNamesTheServiceAccount: the account is on screen because it is what
+// the secret file will be owned by, so a wrong one is visible before the write.
+func TestPanelNamesTheServiceAccount(t *testing.T) {
+	a := newTestApp(t)
+	a.setScreen(wireguard.ScreenUsers)
+	if !strings.Contains(a.View(), "runs as headscale:headscale") {
+		t.Errorf("the panel does not name the service account:\n%s", a.View())
 	}
 }

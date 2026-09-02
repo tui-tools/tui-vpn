@@ -353,7 +353,7 @@ func TestBuildWriteOIDCClientSecretHidesTheValue(t *testing.T) {
 	// credential-shaped string should not write one that a secret scanner has
 	// to decide about.
 	const typed = "placeholder-value-from-the-idp"
-	cmd, err := BuildWriteOIDCClientSecret(typed)
+	cmd, err := BuildWriteOIDCClientSecret(typed, "headscale", "headscale")
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -364,14 +364,94 @@ func TestBuildWriteOIDCClientSecretHidesTheValue(t *testing.T) {
 	if strings.Contains(rendered, typed) {
 		t.Fatalf("the secret is visible in %q", rendered)
 	}
-	if !strings.Contains(cmd.String(), "install -m 600 /dev/stdin "+OIDCClientSecretPath) {
-		t.Errorf("command = %q", cmd.String())
-	}
-	if _, err := BuildWriteOIDCClientSecret("two\nlines"); err == nil {
+	if _, err := BuildWriteOIDCClientSecret("two\nlines", "root", "root"); err == nil {
 		t.Error("a multi-line secret must be refused")
 	}
-	if _, err := BuildWriteOIDCClientSecret(""); err == nil {
+	if _, err := BuildWriteOIDCClientSecret("", "root", "root"); err == nil {
 		t.Error("an empty secret must be refused")
+	}
+}
+
+// TestClientSecretIsOwnedByTheServiceAccount is the fix for the package that
+// runs headscale as its own user: a root-only secret file would leave the
+// service unable to read it, and the restart at the end of the flow would
+// bring back a headscale that cannot start. Owner and mode are set in the same
+// previewed `install`, so there is no second step and no window in between.
+func TestClientSecretIsOwnedByTheServiceAccount(t *testing.T) {
+	for _, tc := range []struct {
+		name, user, group, want string
+	}{
+		{"arch, headscale's own user", "headscale", "headscale",
+			"install -o headscale -g headscale -m 600 /dev/stdin " + OIDCClientSecretPath},
+		{"deb, a unit that runs as root", "root", "root",
+			"install -o root -g root -m 600 /dev/stdin " + OIDCClientSecretPath},
+		{"a unit that names nobody at all", "", "",
+			"install -o root -g root -m 600 /dev/stdin " + OIDCClientSecretPath},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, err := BuildWriteOIDCClientSecret("placeholder", tc.user, tc.group)
+			if err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			if cmd.String() != tc.want {
+				t.Errorf("command = %q,\n           want %q", cmd.String(), tc.want)
+			}
+			// Mode 600 is not relaxed to buy the service access: the owner is
+			// what changes, so the file stays readable by exactly one account.
+			if !strings.Contains(cmd.String(), "-m 600") {
+				t.Error("the mode must stay 600")
+			}
+			// The dialog has to say who will own it, since that is the whole
+			// point of the change.
+			if !strings.Contains(cmd.Description, "mode 600") {
+				t.Errorf("description does not name the mode: %q", cmd.Description)
+			}
+		})
+	}
+
+	// A name that could become a second argument is refused rather than
+	// handed to `install -o`.
+	for _, bad := range []string{"-rf", "root root", "ro;ot", "Root!", strings.Repeat("a", 40)} {
+		if _, err := BuildWriteOIDCClientSecret("placeholder", bad, "root"); err == nil {
+			t.Errorf("user %q was accepted", bad)
+		}
+		if _, err := BuildWriteOIDCClientSecret("placeholder", "root", bad); err == nil {
+			t.Errorf("group %q was accepted", bad)
+		}
+	}
+}
+
+// TestParseServiceAccount reads what `systemctl show -p User -p Group` really
+// prints, including the empty values it uses for a unit that sets neither.
+func TestParseServiceAccount(t *testing.T) {
+	for _, tc := range []struct {
+		name, out, user, group string
+	}{
+		{"headscale's own user", "User=headscale\nGroup=headscale", "headscale", "headscale"},
+		{"a unit that sets neither", "User=\nGroup=", "root", "root"},
+		{"a user with no group named", "User=headscale\nGroup=", "headscale", "headscale"},
+		{"nothing at all (no such unit)", "", "root", "root"},
+		{"trailing whitespace and order", "Group=hs\nUser=hs\n", "hs", "hs"},
+		{"a value that is not an account name", "User=../../etc\nGroup=", "root", "root"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			user, group := ParseServiceAccount(tc.out)
+			if user != tc.user || group != tc.group {
+				t.Errorf("= %q:%q, want %q:%q", user, group, tc.user, tc.group)
+			}
+		})
+	}
+}
+
+func TestValidAccountName(t *testing.T) {
+	for name, want := range map[string]bool{
+		"root": true, "headscale": true, "_apt": true, "user-1": true, "machine$": true,
+		"": false, "-rf": false, "Root": false, "a b": false, "a;b": false,
+		"1user": false, strings.Repeat("a", 40): false,
+	} {
+		if got := ValidAccountName(name); got != want {
+			t.Errorf("ValidAccountName(%q) = %v, want %v", name, got, want)
+		}
 	}
 }
 

@@ -30,8 +30,9 @@ const (
 	// HeadscaleConfigBackupPath is the copy taken before every write, so a
 	// bad edit is one `mv` away from being undone.
 	HeadscaleConfigBackupPath = HeadscaleConfigPath + ".bak"
-	// OIDCClientSecretPath is the root-only file the client secret is written
-	// to. config.yaml points at it instead of carrying the value.
+	// OIDCClientSecretPath is the mode-600 file the client secret is written
+	// to, owned by the account the headscale unit runs as. config.yaml points
+	// at it instead of carrying the value.
 	// The name ends in "secret" because the file it names holds one; the
 	// constant is a path, which is exactly the point of the design.
 	OIDCClientSecretPath = "/etc/headscale/oidc_client_secret" //nolint:gosec // a path, not a credential
@@ -68,6 +69,13 @@ type ControlPlane struct {
 	BaseDomain string `json:"baseDomain,omitempty"`
 	// ServiceState is what `systemctl is-active headscale` answered.
 	ServiceState string `json:"serviceState,omitempty"`
+	// ServiceUser and ServiceGroup are the account the headscale unit runs as,
+	// read from the unit rather than assumed. They matter for exactly one
+	// thing: the client secret file has to be readable by that account. The
+	// Arch package runs headscale as its own user, so a root-only secret file
+	// would leave the service unable to start.
+	ServiceUser  string `json:"serviceUser,omitempty"`
+	ServiceGroup string `json:"serviceGroup,omitempty"`
 	// OIDC is the identity-provider section.
 	OIDC OIDCConfig `json:"oidc"`
 	// Raw is the file byte for byte, kept so an edit can be a minimal splice
@@ -202,6 +210,55 @@ func ParseHeadscaleConfig(data []byte) (ControlPlane, error) {
 	return cp, nil
 }
 
+// DefaultServiceUser is who a unit runs as when it names nobody: systemd's
+// own default, and what the deb and the tarball install ship.
+const DefaultServiceUser = "root"
+
+// ServiceAccountProperties is the read that answers who headscale runs as.
+// `systemctl show` prints `User=` and `Group=` with empty values when the unit
+// does not set them, which is exactly the case that means root.
+func ServiceAccountProperties() []string {
+	return []string{"systemctl", "show", HeadscaleService, "-p", "User", "-p", "Group"}
+}
+
+// ParseServiceAccount reads `systemctl show -p User -p Group` into the account
+// the unit runs as, defaulting each half to root. A name that is not a
+// plausible account name is discarded rather than trusted: it would otherwise
+// end up as an argument to `install -o`.
+func ParseServiceAccount(out string) (user, group string) {
+	user, group = DefaultServiceUser, DefaultServiceUser
+	for _, line := range strings.Split(out, "\n") {
+		key, value, found := strings.Cut(strings.TrimSpace(line), "=")
+		if !found {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if value == "" || !ValidAccountName(value) {
+			continue
+		}
+		switch key {
+		case "User":
+			user = value
+		case "Group":
+			group = value
+		}
+	}
+	// A unit that names a user but no group runs in that user's own group,
+	// which is the name systemd would have printed if it had one to print.
+	if group == DefaultServiceUser && user != DefaultServiceUser {
+		group = user
+	}
+	return user, group
+}
+
+// accountNamePattern is a POSIX-portable account name, plus the trailing '$'
+// Samba machine accounts use. It is deliberately strict: this value becomes an
+// argument to `install -o`.
+var accountNamePattern = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}\$?$`)
+
+// ValidAccountName reports whether s is a plausible user or group name.
+func ValidAccountName(s string) bool { return accountNamePattern.MatchString(s) }
+
 // --- validation -------------------------------------------------------------
 
 // serverURLPattern is a plain http(s) URL with no room for anything that could
@@ -278,6 +335,44 @@ func URLHost(rawURL string) string {
 		rest = rest[:i]
 	}
 	return rest
+}
+
+// IsLoopbackHost reports whether a host name or address is the local machine
+// and therefore unreachable from a client's browser.
+func IsLoopbackHost(host string) bool {
+	host = strings.ToLower(strings.Trim(host, "[]"))
+	return host == "localhost" || host == "::1" || strings.HasPrefix(host, "127.")
+}
+
+// ServerURLIsHTTPS reports whether the URL is https, which is what an IdP
+// requires of a redirect target and what a client's traffic needs.
+func ServerURLIsHTTPS(rawURL string) bool {
+	return strings.HasPrefix(strings.ToLower(rawURL), "https://")
+}
+
+// ListenPort is the port half of a listen address, 0 when there is not one.
+// The host half is deliberately dropped: a bind address can name an internal
+// interface of this machine, and the port is the part worth reporting.
+func ListenPort(addr string) int {
+	i := strings.LastIndexByte(addr, ':')
+	if i < 0 {
+		return 0
+	}
+	port, err := strconv.Atoi(addr[i+1:])
+	if err != nil || port < 1 || port > 65535 {
+		return 0
+	}
+	return port
+}
+
+// ListenHost is the host half of a listen address, empty when it binds every
+// interface (":8080" and "0.0.0.0:8080" both mean the wildcard).
+func ListenHost(addr string) string {
+	i := strings.LastIndexByte(addr, ':')
+	if i < 0 {
+		return addr
+	}
+	return strings.Trim(addr[:i], "[]")
 }
 
 // listenAddrPattern is a bind address: an optional host and a mandatory port.
@@ -739,18 +834,39 @@ func BuildWriteHeadscaleConfig(content string) (runner.Command, error) {
 //
 // The secret is the Stdin of the command, which the runner deliberately keeps
 // out of String and out of Preview: what the confirm dialog shows is the
-// command line, and the command line here mentions only a path. `install -m
-// 600` creates the file with the right mode atomically instead of
-// touch-then-chmod, so there is no window in which the secret is world
-// readable.
-func BuildWriteOIDCClientSecret(secret string) (runner.Command, error) {
+// command line, and the command line here mentions only a path and an account.
+// `install` creates the file with the right owner and mode atomically instead
+// of write-then-chown-then-chmod, so there is no window in which the secret is
+// readable by anyone it should not be — and no second previewed step either.
+//
+// The owner is the account the headscale unit actually runs as, read from the
+// unit rather than assumed. A root-only file works on the deb, whose unit runs
+// as root, and breaks the Arch package, whose unit runs headscale as its own
+// user: the service would come back from the restart unable to read its own
+// secret. Mode stays 600 in both cases, so the file is readable by exactly one
+// account and no other.
+func BuildWriteOIDCClientSecret(secret, user, group string) (runner.Command, error) {
 	if !ValidClientSecret(secret) {
 		return runner.Command{}, fmt.Errorf("not a valid client secret")
 	}
+	if user == "" {
+		user = DefaultServiceUser
+	}
+	if group == "" {
+		group = DefaultServiceUser
+	}
+	if !ValidAccountName(user) {
+		return runner.Command{}, fmt.Errorf("not a valid user name: %q", user)
+	}
+	if !ValidAccountName(group) {
+		return runner.Command{}, fmt.Errorf("not a valid group name: %q", group)
+	}
 	return runner.Command{
-		Argv:        []string{"install", "-m", "600", "/dev/stdin", OIDCClientSecretPath},
-		Description: "Write the OIDC client secret to " + OIDCClientSecretPath,
-		Stdin:       secret,
+		Argv: []string{"install", "-o", user, "-g", group, "-m", "600",
+			"/dev/stdin", OIDCClientSecretPath},
+		Description: "Write the OIDC client secret to " + OIDCClientSecretPath +
+			" (owner " + user + ":" + group + ", mode 600)",
+		Stdin: secret,
 	}, nil
 }
 

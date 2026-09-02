@@ -172,9 +172,10 @@ func (a *app) tookOIDCClientID(value string) tea.Cmd {
 	}
 	a.cpDraft.clientID = value
 
-	help := "Typed masked, written to " + wireguard.OIDCClientSecretPath + " (root, mode 600) " +
-		"and referenced from config.yaml as client_secret_path, so it is never in the " +
-		"configuration file and never shown again — not even to you."
+	help := "Typed masked, written to " + wireguard.OIDCClientSecretPath + " (mode 600, owned " +
+		"by " + serviceAccount(a.state.Headscale.ControlPlane) + " — the account this host's " +
+		"headscale unit runs as) and referenced from config.yaml as client_secret_path, so " +
+		"it is never in the configuration file and never shown again — not even to you."
 	if a.state.Headscale.ControlPlane.OIDC.ClientSecretSet {
 		help = "A secret is already set. Leave this empty to keep it, or type a new one to " +
 			"replace it. " + help
@@ -324,14 +325,18 @@ func (a *app) confirmOIDCChain(msg discoveredMsg) tea.Cmd {
 
 	// The secret goes first: config.yaml must never point at a file that is
 	// not there yet.
-	secret, err := wireguard.BuildWriteOIDCClientSecret(a.cpDraft.clientSecret)
+	cp := a.state.Headscale.ControlPlane
+	secret, err := wireguard.BuildWriteOIDCClientSecret(
+		a.cpDraft.clientSecret, cp.ServiceUser, cp.ServiceGroup)
 	// The value has done its job the moment the command holds it; the draft
 	// gives it up here rather than at the end of the flow.
 	a.cpDraft.forgetSecretValue()
 	cmd := a.openConfirmWith(discovery+"\n\nStep 1 of 3 — write the client secret to "+
-		wireguard.OIDCClientSecretPath+" (root, mode 600). The secret travels on the "+
-		"command's standard input, so it is not on the command line below and not in "+
-		"this dialog; config.yaml will reference the file instead of carrying the value.",
+		wireguard.OIDCClientSecretPath+", mode 600, owned by "+serviceAccount(cp)+" — the "+
+		"account this host's headscale unit actually runs as, so the service can read it "+
+		"after the restart. The secret travels on the command's standard input, so it is "+
+		"not on the command line below and not in this dialog; config.yaml will reference "+
+		"the file instead of carrying the value.",
 		secret, err)
 	if a.mode == modeConfirm {
 		a.after = func(string) tea.Cmd {
@@ -342,6 +347,18 @@ func (a *app) confirmOIDCChain(msg discoveredMsg) tea.Cmd {
 		a.cpDraft.forgetSecret()
 	}
 	return cmd
+}
+
+// serviceAccount renders the account a unit runs as, for a dialog.
+func serviceAccount(cp wireguard.ControlPlane) string {
+	user, group := cp.ServiceUser, cp.ServiceGroup
+	if user == "" {
+		user = wireguard.DefaultServiceUser
+	}
+	if group == "" {
+		group = wireguard.DefaultServiceUser
+	}
+	return user + ":" + group
 }
 
 // forgetSecretValue drops the secret but keeps the flag that says the flow is

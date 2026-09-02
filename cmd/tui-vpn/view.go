@@ -99,6 +99,11 @@ func (a *app) controlPlanePanel() []string {
 	if cp.ServiceState != "" {
 		head += " · headscale " + cp.ServiceState
 	}
+	if cp.ServiceUser != "" {
+		// The account matters because the client secret file is written owned
+		// by it: this is the value that has to be right for the restart.
+		head += " · runs as " + serviceAccount(cp)
+	}
 	if !cp.Readable {
 		reason := cp.Error
 		if reason == "" {
@@ -600,8 +605,9 @@ func helpKeys() []ui.KeyHint {
 		{Key: "", Desc: ""},
 		{Key: "identity", Desc: "login is OIDC in the client's browser against your IdP;"},
 		{Key: "", Desc: "the Headscale server exposes no web admin, by design."},
-		{Key: "", Desc: "The client secret is typed masked, written to a root-only"},
-		{Key: "", Desc: "file, and never shown again — not even to you"},
+		{Key: "", Desc: "The client secret is typed masked, written mode 600 to a"},
+		{Key: "", Desc: "file owned by the headscale service, and never shown"},
+		{Key: "", Desc: "again — not even to you"},
 		{Key: "", Desc: ""},
 		{Key: "note", Desc: "every change is previewed and confirmed first"},
 		{Key: "keys", Desc: "a private key is never shown, typed, or put on a command line"},
