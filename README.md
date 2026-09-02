@@ -255,7 +255,7 @@ Available once the first release lands in pkgs.tui.tools.
 ### Any distribution, static binary — coming soon
 
 ```sh
-curl -fsSL https://github.com/tui-tools/tui-vpn/releases/download/v0.2.1/tui-vpn_0.2.1_linux_amd64.tar.gz | tar -xz tui-vpn
+curl -fsSL https://github.com/tui-tools/tui-vpn/releases/download/v0.3.0/tui-vpn_0.3.0_linux_amd64.tar.gz | tar -xz tui-vpn
 sudo install -m0755 tui-vpn /usr/local/bin/tui-vpn
 ```
 
