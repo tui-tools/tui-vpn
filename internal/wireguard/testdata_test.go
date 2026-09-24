@@ -54,6 +54,8 @@ func TestFixturesCarryNoRealAddress(t *testing.T) {
 				}
 				for _, n := range nodes {
 					addrs = append(addrs, prefixAddrs(n.IPAddresses)...)
+					addrs = append(addrs, prefixAddrs(n.AvailableRoutes)...)
+					addrs = append(addrs, prefixAddrs(n.ApprovedRoutes)...)
 				}
 			case strings.HasPrefix(name, "ip-route"):
 				routes, err := ParseRoutes(data)
@@ -91,6 +93,9 @@ func TestDemoDataCarriesNoRealAddress(t *testing.T) {
 	}
 	for _, n := range state.Headscale.Nodes {
 		for _, a := range prefixAddrs(n.IPAddresses) {
+			assertDocumentationAddress(t, a)
+		}
+		for _, a := range prefixAddrs(append(n.AvailableRoutes, n.ApprovedRoutes...)) {
 			assertDocumentationAddress(t, a)
 		}
 	}

@@ -44,6 +44,8 @@ const (
 	inputNewIfaceEgress
 	inputCreatePreAuthKey
 	inputRenameNode
+	// The routes a node is approved to serve.
+	inputApproveRoutes
 	// The server-settings form, in the order the fields are asked for; the
 	// ACME and certificate steps only for the transports that need them.
 	inputServerURL
@@ -362,6 +364,9 @@ func (a *app) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case inputRenameNode:
 		id, _ := payload.(string)
 		return a, a.openConfirm(wireguard.BuildRenameNode(id, value))
+	case inputApproveRoutes:
+		id, _ := payload.(string)
+		return a, a.confirmApproveRoutes(id, value)
 	}
 	return a, a.handleControlPlaneInput(purpose, value)
 }
@@ -439,6 +444,11 @@ func (a *app) handleBrowseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.moveCursor(-a.listHeight())
 		return a, nil
 	case "r", "ctrl+r":
+		// On the nodes screen r is the routes of the selected node; ctrl+r
+		// still reloads there, as everywhere.
+		if key == "r" && a.screen == wireguard.ScreenNodes {
+			break
+		}
 		a.loading = true
 		return a, a.load()
 	}
@@ -534,6 +544,12 @@ func (a *app) handleActionKey(key string) tea.Cmd {
 				"This deletes the node from the control plane. The machine loses "+
 					"access and must register again to come back.",
 				cmd, err)
+		case "r":
+			node, ok := a.selectedNode()
+			if !ok {
+				return a.warnNothing()
+			}
+			return a.startApproveRoutes(node)
 		case "m":
 			node, ok := a.selectedNode()
 			if !ok {

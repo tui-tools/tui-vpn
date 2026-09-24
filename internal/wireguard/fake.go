@@ -68,7 +68,8 @@ func DemoPeer2Pub() string { return demoPeer2Pub }
 
 // NewFake returns a Fake preloaded with a plausible network: one interface with
 // two peers — one mid-handshake, one that has never connected — and a Headscale
-// control plane with two users, three nodes and a pre-auth key.
+// control plane with two users, four nodes (one of them a subnet router with
+// routes pending) and a pre-auth key.
 func NewFake() *Fake {
 	// The demo unit is running but disabled: started by hand after the
 	// package installed it, the way a fresh install usually ends up, and
@@ -315,6 +316,8 @@ func (f *Fake) apply(cmd runner.Command) (string, error) {
 		return f.deleteNode(argv[4])
 	case len(argv) == 6 && argv[0] == "headscale" && argv[1] == "nodes" && argv[2] == "rename":
 		return f.renameNode(argv[4], argv[5])
+	case len(argv) >= 6 && argv[0] == "headscale" && argv[1] == "nodes" && argv[2] == "approve-routes":
+		return f.approveRoutes(argv[4], argv[5:])
 	case len(argv) >= 7 && argv[0] == "headscale" && argv[1] == "preauthkeys" && argv[2] == "create":
 		return f.createPreAuthKey(argv)
 	case len(argv) == 4 && argv[0] == "headscale" && argv[1] == "users" && argv[2] == "create":
@@ -562,6 +565,35 @@ func (f *Fake) deleteNode(id string) (string, error) {
 	return "", fmt.Errorf("no such node: %s", id)
 }
 
+// approveRoutes applies `headscale nodes approve-routes`: the list replaces
+// the node's approvals, and what is served is what is both advertised and
+// approved.
+func (f *Fake) approveRoutes(id string, args []string) (string, error) {
+	var routes []string
+	switch {
+	case len(args) == 1 && args[0] == "--routes=":
+	case len(args) == 2 && args[0] == "--routes":
+		routes = strings.Split(args[1], ",")
+	default:
+		return "", fmt.Errorf("approve-routes: unexpected arguments %q", args)
+	}
+	for i := range f.state.Headscale.Nodes {
+		n := &f.state.Headscale.Nodes[i]
+		if n.ID != id {
+			continue
+		}
+		n.ApprovedRoutes = routes
+		n.SubnetRoutes = nil
+		for _, r := range NodeRoutes(*n) {
+			if r.Advertised && r.Approved {
+				n.SubnetRoutes = append(n.SubnetRoutes, r.Route)
+			}
+		}
+		return "Node updated", nil
+	}
+	return "", fmt.Errorf("no such node: %s", id)
+}
+
 func (f *Fake) renameNode(id, name string) (string, error) {
 	for i := range f.state.Headscale.Nodes {
 		if f.state.Headscale.Nodes[i].ID == id {
@@ -728,6 +760,17 @@ func demoState() State {
 					RegisterMethod: "REGISTER_METHOD_AUTH_KEY",
 					// Already expired: the row the operator is meant to notice.
 					Expiry: now.Add(-2 * 24 * time.Hour)},
+				// A subnet router in the office: one route approved, one
+				// still pending, and an exit node nobody approved yet.
+				{ID: "4", Name: "office-gw", GivenName: "office-gw", User: "ana",
+					IPAddresses: []string{"192.0.2.5"},
+					LastSeen:    now.Add(-20 * time.Second), Online: true,
+					RegisterMethod: "REGISTER_METHOD_AUTH_KEY",
+					Expiry:         time.Time{},
+					AvailableRoutes: []string{"198.51.100.0/24", "203.0.113.0/24",
+						"0.0.0.0/0", "::/0"},
+					ApprovedRoutes: []string{"198.51.100.0/24"},
+					SubnetRoutes:   []string{"198.51.100.0/24"}},
 			},
 			PreAuthKeys: []PreAuthKey{
 				{ID: "1", User: "ana", KeyPrefix: "0123456789", Reusable: true,

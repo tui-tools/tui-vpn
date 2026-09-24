@@ -49,7 +49,7 @@ func TestRunCheckPrintsOneReadOfEverything(t *testing.T) {
 	if never != 1 || fresh != 1 {
 		t.Errorf("handshake ages = %+v, want one fresh and one never", iface.Peers)
 	}
-	if !report.Headscale.Present || report.Headscale.Users != 2 || report.Headscale.Nodes != 3 {
+	if !report.Headscale.Present || report.Headscale.Users != 2 || report.Headscale.Nodes != 4 {
 		t.Errorf("headscale summary is wrong: %+v", report.Headscale)
 	}
 	if !report.Headscale.OIDCConfigured {

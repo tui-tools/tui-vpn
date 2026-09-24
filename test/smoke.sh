@@ -223,6 +223,18 @@ check "check without privilege reports the firewall as unread, not open" \
   "$bin --sudo '' --check | grep -c '\"listenPortInput\": \"accept\"' || true" \
   '^0$'
 
+# --- node routes -----------------------------------------------------------
+#
+# A subnet router's routes stay pending until approved; --check counts them per
+# node and never prints the networks.
+check "check --demo counts the demo router's pending exit node" \
+  "$bin --demo --check" \
+  '"exitNode": "pending"'
+
+check "check --demo prints no route" \
+  "$bin --demo --check | grep -cE '0\.0\.0\.0/0|203\.0\.113\.' || true" \
+  '^0$'
+
 # --- compatibility evidence ------------------------------------------------
 #
 # record_compat turns this run into the evidence `tested` is generated from:

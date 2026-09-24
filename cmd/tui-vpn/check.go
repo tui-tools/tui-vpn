@@ -101,6 +101,22 @@ type hsSummary struct {
 	NodesOnline  int       `json:"nodesOnline"`
 	NodesExpired int       `json:"nodesExpired"`
 	PreAuthKeys  int       `json:"preAuthKeys"`
+	// NodeRoutes is each node's routes, counted: advertised, approved (and
+	// advertised), pending approval, and where it stands as an exit node. The
+	// CIDRs themselves are not printed: they are the networks behind the
+	// tailnet, which is as much an address of somebody's layout as the
+	// endpoints --check leaves out.
+	NodeRoutes []nodeRoutes `json:"nodeRoutes,omitempty"`
+}
+
+// nodeRoutes is one node's routes, reduced to counts.
+type nodeRoutes struct {
+	ID         string `json:"id"`
+	Advertised int    `json:"advertised"`
+	Approved   int    `json:"approved"`
+	Pending    int    `json:"pending"`
+	// ExitNode is "" (not advertised), "pending" or "approved".
+	ExitNode string `json:"exitNode,omitempty"`
 }
 
 // cpSummary is what /etc/headscale/config.yaml says, reduced to the facts a
@@ -310,6 +326,9 @@ func summariseHS(hs wireguard.Headscale) hsSummary {
 		summary.ControlPlane.OIDCReadiness = &readiness
 	}
 	for _, node := range hs.Nodes {
+		if routes := routesOf(node); routes != nil {
+			summary.NodeRoutes = append(summary.NodeRoutes, *routes)
+		}
 		if node.Online {
 			summary.NodesOnline++
 		}
@@ -330,6 +349,28 @@ func probeIssuer(ctx context.Context, backend wireguard.Backend, issuer string) 
 	}
 	out, err := backend.Run(ctx, cmd)
 	return err == nil && wireguard.DiscoveryLooksValid(out)
+}
+
+// routesOf counts a node's routes, or nil when it has none: most nodes are
+// plain clients and would only add noise. The exit routes count as one.
+func routesOf(n wireguard.Node) *nodeRoutes {
+	states := wireguard.NodeRoutes(n)
+	if len(states) == 0 {
+		return nil
+	}
+	r := &nodeRoutes{ID: n.ID, ExitNode: wireguard.ExitNodeState(n)}
+	for _, st := range states {
+		if wireguard.IsExitRoute(st.Route) || !st.Advertised {
+			continue
+		}
+		r.Advertised++
+		if st.Approved {
+			r.Approved++
+		} else {
+			r.Pending++
+		}
+	}
+	return r
 }
 
 // handshakeAge is seconds since a handshake, or -1 when there has never been

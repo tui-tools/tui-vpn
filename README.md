@@ -26,18 +26,18 @@ A private key is never shown, typed, or put on a command line. Adding a peer nee
 tui-vpn --demo
 ```
 
-`--demo` runs every screen against a fake WireGuard and a fake Headscale: one interface with two peers — one mid-handshake, one that has never connected — and a control plane with two users, three nodes and a pre-auth key. Nothing on the host is read and nothing is changed.
+`--demo` runs every screen against a fake WireGuard and a fake Headscale: one interface with two peers — one mid-handshake, one that has never connected — and a control plane with two users, four nodes (one of them a subnet router with a route approved, one pending and an exit node waiting) and a pre-auth key. The interface is a forwarding server with its port open in the demo's firewall. Nothing on the host is read and nothing is changed.
 
 ## Screens
 
 `tab` (or `1`…`5`) switches between them:
 
-![The status screen: WireGuard interfaces, their state and peer counts](docs/screenshots/tui-vpn-status.png)
+![The status screen: WireGuard interfaces, their state, whether the host firewall opens the port and forwards for them, and peer counts](docs/screenshots/tui-vpn-status.png)
 
 - **interfaces** — the WireGuard interfaces on this host, with peer counts and state, whether the host firewall lets a handshake reach the listen port, and whether the host forwards for the interface. `N` creates one from zero (an endpoint, or a forwarding server with its rules), `u` / `d` bring one up or down, `w` saves its runtime config.
 - **peers** — the peers of the selected interface: endpoint, handshake age, transfer, allowed-ips, keepalive. `a` / `x` add or remove a peer (end the add line with `psk` to also generate a pre-shared key file); `w` saves.
 - **users** — the Headscale users, and the provider they authenticate against, under a panel showing what `/etc/headscale/config.yaml` says: `server_url`, `listen_addr`, `dns.base_domain`, the transport and the OIDC redirect URI it implies, the OIDC issuer and client id, whether a client secret is set, the allow lists, and the state of the `headscale` unit: active or not, enabled at boot or not, the account it runs as, and whether that account owns its state files. `n` creates a user; `S` and `O` configure the control plane; `F` fixes the ownership of headscale's files.
-- **nodes** — the machines registered with Headscale, who owns each, and key expiry. `e` expires one, `m` renames one, `x` deletes one.
+- **nodes** — the machines registered with Headscale, who owns each, key expiry, and the routes each advertises with whether they are approved. `r` approves or revokes routes, `e` expires a node, `m` renames one, `x` deletes one (`ctrl+r` reloads here, since `r` is taken).
 - **preauth keys** — the keys that let a machine register itself, shown by prefix only. `n` creates one, shown exactly once.
 
 **When the headscale unit is not running**, the users, nodes and keys screens do not ask the CLI (it talks to the running server over a socket, so every list would fail) and say what to do instead: `headscale is not running · S configures and starts it` on a fresh install, `systemctl start headscale` when `server_url` is already set up, and `journalctl -u headscale` when the unit has failed. `S`, `O` and `F` keep working, since they only need the configuration file. When the CLI fails for another reason, the screen shows the `error` field of the JSON it printed rather than its first raw line.
@@ -48,7 +48,7 @@ tui-vpn --demo
 
 The panel is the answer to what the identity note used to leave hanging: which IdP, reachable at which URL, and whether a secret is set — never what it is.
 
-![The Headscale nodes screen: who owns each node and its state, above the OIDC identity note](docs/screenshots/tui-vpn-headscale.png)
+![The Headscale nodes screen: who owns each node, its state, and its advertised routes, spelled out for the selected subnet router](docs/screenshots/tui-vpn-headscale.png)
 
 Every mutation opens a confirm dialog with the exact command before it runs.
 
@@ -196,6 +196,18 @@ A path that does not exist yet is not a problem, and a unit that runs as root is
 - the secret file and the backup get a plain `chown` each.
 
 The chain ends with the same restart (or enable) step as `S` and `O`, since a service that failed on these files needs one. `--check` reports the result as `ownershipChecked`, `ownershipOk` and `ownershipIssues` (path, role, current and wanted owner); an ownership that could not be read is reported as unchecked, never as fine.
+
+### Routes: subnet routers and exit nodes (`r` on the nodes screen)
+
+A node that runs `tailscale up --advertise-routes=10.0.0.0/16` (a subnet router) or `--advertise-exit-node` offers routes to the tailnet, and they stay pending until an admin approves them. The **ROUTES** column shows each advertised route with its state (`10.0.0.0/16 ✓`, `10.1.0.0/24 pending`), and the two exit routes (`0.0.0.0/0` and `::/0`) as one `exit node`.
+
+`r` opens the selected node's routes, prefilled with everything it advertises, so approving what it offers is one keystroke. The list **replaces** the node's approvals, because that is what the command does: take an entry out to revoke it, leave the line empty to revoke them all; `exit` stands for both exit routes. The confirm says what is approved and what is revoked, and previews:
+
+```sh
+headscale nodes approve-routes --identifier <id> --routes 10.0.0.0/16,0.0.0.0/0,::/0
+```
+
+A revocation is a danger dialog, and revoking everything is written `--routes=` so the empty value is visible. (`headscale routes` no longer exists since 0.26; the field names were checked against headscale 0.29.3's own output: `available_routes`, `approved_routes`, `subnet_routes`.) `--check` reports each node's routes as counts, `nodeRoutes` with `advertised`, `approved`, `pending` and `exitNode`, never the networks themselves.
 
 ### Node rename and delete (`m` / `x`)
 

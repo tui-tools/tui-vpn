@@ -177,6 +177,13 @@ type Node struct {
 	Expiry         time.Time `json:"expiry,omitempty"`
 	Online         bool      `json:"online"`
 	RegisterMethod string    `json:"registerMethod,omitempty"`
+	// AvailableRoutes are the routes the node advertises (subnet routes, and
+	// 0.0.0.0/0 with ::/0 for an exit node); ApprovedRoutes the ones an admin
+	// approved; SubnetRoutes the ones actually served, advertised and
+	// approved. See routes.go.
+	AvailableRoutes []string `json:"availableRoutes,omitempty"`
+	ApprovedRoutes  []string `json:"approvedRoutes,omitempty"`
+	SubnetRoutes    []string `json:"subnetRoutes,omitempty"`
 }
 
 // PreAuthKey is a key that lets a machine register itself for a user without a
@@ -267,6 +274,8 @@ const (
 	// ActionServerSettings writes server_url and listen_addr into headscale's
 	// configuration and restarts the service.
 	ActionServerSettings Action = "server-settings"
+	// ActionApproveRoutes sets the routes a node is approved to serve.
+	ActionApproveRoutes Action = "approve-routes"
 	// ActionOIDCSettings writes the oidc section — and the client secret into
 	// its own root-only file — and restarts the service.
 	ActionOIDCSettings Action = "oidc-settings"

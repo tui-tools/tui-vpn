@@ -69,6 +69,10 @@ func acceptsEmpty(purpose inputPurpose) bool {
 	case inputNewIfaceNetworks:
 		// No networks means a forwarding server for any destination.
 		return true
+	case inputApproveRoutes:
+		// No routes means revoke every approval, which is a real answer
+		// (previewed as a danger dialog).
+		return true
 	}
 	return false
 }

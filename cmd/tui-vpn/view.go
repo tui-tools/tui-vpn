@@ -81,6 +81,16 @@ func (a *app) noteLines() []string {
 		return []string{""}
 	}
 	note := a.theme.Muted.Render(ui.Truncate(controlPlaneNote, a.width))
+	if a.screen == wireguard.ScreenNodes {
+		// The selected node's routes, spelled out: the table cell only has
+		// room for the counts.
+		if node, ok := a.selectedNode(); ok && len(wireguard.NodeRoutes(node)) > 0 {
+			routes := "routes of " + nodeName(node) + ": " + wireguard.RoutesText(node) +
+				" — r approves or revokes"
+			return []string{note, a.theme.Muted.Render(ui.Truncate(routes, a.width))}
+		}
+		return []string{note}
+	}
 	if a.screen != wireguard.ScreenUsers {
 		return []string{note}
 	}
@@ -125,7 +135,7 @@ func (a *app) controlPlanePanel() []string {
 		"  allowed     domains "+listOrDash(oidc.AllowedDomains)+
 			" AND groups "+listOrDash(oidc.AllowedGroups)+
 			" AND users "+listOrDash(oidc.AllowedUsers)+
-			" — a login must match every list that is not empty",
+			" (every non-empty list must match)",
 	)
 	// The allow-list mistakes headscale makes silently, at the login: a
 	// groups list the IdP never satisfies, users the domains refuse.
@@ -420,12 +430,16 @@ func (a *app) usersTable() ([]ui.Column, [][]string, []*lipgloss.Style) {
 
 func (a *app) nodesTable() ([]ui.Column, [][]string, []*lipgloss.Style) {
 	columns := []ui.Column{
-		{Title: "ID", Width: 4},
-		{Title: "NODE", Width: 14, Flex: true},
-		{Title: "USER", Width: 10},
-		{Title: "ADDRESSES", Width: 18},
-		{Title: "LAST SEEN", Width: 11},
+		{Title: "ID", Width: 3},
+		{Title: "NODE", Width: 12},
+		{Title: "USER", Width: 8},
+		{Title: "ADDRESSES", Width: 12},
+		{Title: "LAST SEEN", Width: 10},
 		{Title: "STATE", Width: 8},
+		// Advertised routes and whether each is approved; the exit routes
+		// read as one "exit node". It takes the width that is left, because
+		// it is the column that grows.
+		{Title: "ROUTES", Width: 24, Flex: true},
 	}
 	nodes := a.state.Headscale.Nodes
 	now := time.Now()
@@ -435,7 +449,7 @@ func (a *app) nodesTable() ([]ui.Column, [][]string, []*lipgloss.Style) {
 		rows = append(rows, []string{
 			n.ID, nodeName(n), orDash(n.User),
 			strings.Join(n.IPAddresses, ", "),
-			ago(now, n.LastSeen), nodeState(now, n),
+			ago(now, n.LastSeen), nodeState(now, n), wireguard.RoutesSummary(n),
 		})
 		styles = append(styles, a.nodeStyle(now, n))
 	}
@@ -660,13 +674,18 @@ func (a *app) shortHelpKeys() []ui.KeyHint {
 			ui.KeyHint{Key: "F", Desc: "fix owner"})
 	case wireguard.ScreenNodes:
 		hints = append(hints,
+			ui.KeyHint{Key: "r", Desc: "routes"},
 			ui.KeyHint{Key: "e", Desc: "expire"}, ui.KeyHint{Key: "m", Desc: "rename"},
 			ui.KeyHint{Key: "x", Desc: "delete"})
 	case wireguard.ScreenKeys:
 		hints = append(hints, ui.KeyHint{Key: "n", Desc: "new key"})
 	}
+	reload := "r"
+	if a.screen == wireguard.ScreenNodes {
+		reload = "ctrl+r"
+	}
 	return append(hints,
-		ui.KeyHint{Key: "r", Desc: "reload"},
+		ui.KeyHint{Key: reload, Desc: "reload"},
 		ui.KeyHint{Key: "?", Desc: "help"},
 		ui.KeyHint{Key: "q", Desc: "quit"},
 	)
@@ -680,7 +699,7 @@ func helpKeys() []ui.KeyHint {
 		{Key: "↑/k, ↓/j", Desc: "move the selection"},
 		{Key: "g / G", Desc: "first / last row"},
 		{Key: "pgup/pgdn", Desc: "scroll a page"},
-		{Key: "r", Desc: "reload"},
+		{Key: "r / ctrl+r", Desc: "reload (ctrl+r on the nodes screen)"},
 		{Key: "", Desc: ""},
 		{Key: "N", Desc: "create a new interface from zero (keygen, conf, up); as"},
 		{Key: "", Desc: "a forwarding server: ip_forward, FORWARD -I, MASQUERADE,"},
@@ -691,6 +710,8 @@ func helpKeys() []ui.KeyHint {
 		{Key: "", Desc: "to also generate a pre-shared key file)"},
 		{Key: "n", Desc: "create a Headscale user (users) / pre-auth key (keys)"},
 		{Key: "e / m / x", Desc: "expire / rename / delete the selected node"},
+		{Key: "r (nodes)", Desc: "approve or revoke the node's advertised routes"},
+		{Key: "", Desc: "(subnet routes; \"exit\" is the exit node)"},
 		{Key: "S", Desc: "server settings (users): transport (plain http, Let's"},
 		{Key: "", Desc: "Encrypt, own certificate, reverse proxy), server_url,"},
 		{Key: "", Desc: "listen_addr and dns.base_domain, then a restart (or an"},
