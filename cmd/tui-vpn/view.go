@@ -81,6 +81,16 @@ func (a *app) noteLines() []string {
 		return []string{""}
 	}
 	note := a.theme.Muted.Render(ui.Truncate(controlPlaneNote, a.width))
+	if a.screen == wireguard.ScreenNodes {
+		// The selected node's routes, spelled out: the table cell only has
+		// room for the counts.
+		if node, ok := a.selectedNode(); ok && len(wireguard.NodeRoutes(node)) > 0 {
+			routes := "routes of " + nodeName(node) + ": " + wireguard.RoutesText(node) +
+				" — r approves or revokes"
+			return []string{note, a.theme.Muted.Render(ui.Truncate(routes, a.width))}
+		}
+		return []string{note}
+	}
 	if a.screen != wireguard.ScreenUsers {
 		return []string{note}
 	}
@@ -116,15 +126,23 @@ func (a *app) controlPlanePanel() []string {
 	if own := ownershipLine(cp); own != "" {
 		lines = append(lines, own)
 	}
-	return append(lines,
+	lines = append(lines,
 		server,
 		"  transport   "+wireguard.TransportNote(cp),
 		"  redirect    "+redirectLine(cp),
 		"  oidc        issuer "+orDash(oidc.Issuer)+
 			" · client_id "+orDash(oidc.ClientID)+" · "+secretState(oidc),
 		"  allowed     domains "+listOrDash(oidc.AllowedDomains)+
-			" · groups "+listOrDash(oidc.AllowedGroups)+
-			" · users "+listOrDash(oidc.AllowedUsers),
+			" AND groups "+listOrDash(oidc.AllowedGroups)+
+			" AND users "+listOrDash(oidc.AllowedUsers)+
+			" (every non-empty list must match)",
+	)
+	// The allow-list mistakes headscale makes silently, at the login: a
+	// groups list the IdP never satisfies, users the domains refuse.
+	for _, w := range wireguard.OIDCWarnings(oidc) {
+		lines = append(lines, "  ⚠           "+w)
+	}
+	return append(lines,
 		"  scope       "+listOrDash(oidc.Scope)+
 			" · pkce "+onOff(oidc.PKCE)+
 			" · only_start_if_oidc_is_available "+yesNo(oidc.OnlyStartIfAvailable),
@@ -146,7 +164,7 @@ func redirectLine(cp wireguard.ControlPlane) string {
 	case wireguard.IsIPHost(host):
 		return uri + " — most IdPs (Google included) refuse a redirect on an IP"
 	}
-	return uri + " — register it with the IdP"
+	return uri + " — register it as the OAuth client's redirect URI"
 }
 
 // ownershipLine says whether headscale can read its own files. A mismatch is
@@ -300,6 +318,11 @@ func (a *app) emptyMessage() string {
 		if !a.state.Headscale.Present {
 			return "no Headscale control plane on this host"
 		}
+		if a.state.Headscale.NotRunning {
+			// Nothing failed: the CLI was not asked, because the unit is
+			// stopped. The message says how to start it.
+			return a.state.Headscale.Error
+		}
 		if a.state.Headscale.Error != "" {
 			return "could not read Headscale: " + a.state.Headscale.Error
 		}
@@ -338,6 +361,10 @@ func (a *app) statusTable() ([]ui.Column, [][]string, []*lipgloss.Style) {
 		{Title: "INTERFACE", Width: 12, Flex: true},
 		{Title: "STATE", Width: 6},
 		{Title: "PORT", Width: 6},
+		// Whether the host firewall lets a handshake reach the port, and
+		// whether the host forwards for the interface.
+		{Title: "UDP IN", Width: 7},
+		{Title: "FORWARD", Width: 8},
 		{Title: "PEERS", Width: 6},
 		{Title: "PUBLIC KEY", Width: 14},
 	}
@@ -345,8 +372,8 @@ func (a *app) statusTable() ([]ui.Column, [][]string, []*lipgloss.Style) {
 	styles := make([]*lipgloss.Style, 0, len(a.state.Devices))
 	for _, d := range a.state.Devices {
 		rows = append(rows, []string{
-			d.Name, upState(d.Up), portOf(d.ListenPort),
-			strconv.Itoa(len(d.Peers)), shortKey(d.PublicKey),
+			d.Name, upState(d.Up), portOf(d.ListenPort), firewallText(d),
+			forwardText(d), strconv.Itoa(len(d.Peers)), shortKey(d.PublicKey),
 		})
 		styles = append(styles, a.stateStyle(d.Up))
 	}
@@ -403,12 +430,16 @@ func (a *app) usersTable() ([]ui.Column, [][]string, []*lipgloss.Style) {
 
 func (a *app) nodesTable() ([]ui.Column, [][]string, []*lipgloss.Style) {
 	columns := []ui.Column{
-		{Title: "ID", Width: 4},
-		{Title: "NODE", Width: 14, Flex: true},
-		{Title: "USER", Width: 10},
-		{Title: "ADDRESSES", Width: 18},
-		{Title: "LAST SEEN", Width: 11},
+		{Title: "ID", Width: 3},
+		{Title: "NODE", Width: 12},
+		{Title: "USER", Width: 8},
+		{Title: "ADDRESSES", Width: 12},
+		{Title: "LAST SEEN", Width: 10},
 		{Title: "STATE", Width: 8},
+		// Advertised routes and whether each is approved; the exit routes
+		// read as one "exit node". It takes the width that is left, because
+		// it is the column that grows.
+		{Title: "ROUTES", Width: 24, Flex: true},
 	}
 	nodes := a.state.Headscale.Nodes
 	now := time.Now()
@@ -418,7 +449,7 @@ func (a *app) nodesTable() ([]ui.Column, [][]string, []*lipgloss.Style) {
 		rows = append(rows, []string{
 			n.ID, nodeName(n), orDash(n.User),
 			strings.Join(n.IPAddresses, ", "),
-			ago(now, n.LastSeen), nodeState(now, n),
+			ago(now, n.LastSeen), nodeState(now, n), wireguard.RoutesSummary(n),
 		})
 		styles = append(styles, a.nodeStyle(now, n))
 	}
@@ -486,6 +517,14 @@ func (a *app) nodeStyle(now time.Time, n wireguard.Node) *lipgloss.Style {
 }
 
 // --- small formatters ---
+
+// forwardText says whether the host forwards for an interface.
+func forwardText(d wireguard.Device) string {
+	if d.Forwarding {
+		return "yes"
+	}
+	return "-"
+}
 
 func upState(up bool) string {
 	if up {
@@ -635,13 +674,18 @@ func (a *app) shortHelpKeys() []ui.KeyHint {
 			ui.KeyHint{Key: "F", Desc: "fix owner"})
 	case wireguard.ScreenNodes:
 		hints = append(hints,
+			ui.KeyHint{Key: "r", Desc: "routes"},
 			ui.KeyHint{Key: "e", Desc: "expire"}, ui.KeyHint{Key: "m", Desc: "rename"},
 			ui.KeyHint{Key: "x", Desc: "delete"})
 	case wireguard.ScreenKeys:
 		hints = append(hints, ui.KeyHint{Key: "n", Desc: "new key"})
 	}
+	reload := "r"
+	if a.screen == wireguard.ScreenNodes {
+		reload = "ctrl+r"
+	}
 	return append(hints,
-		ui.KeyHint{Key: "r", Desc: "reload"},
+		ui.KeyHint{Key: reload, Desc: "reload"},
 		ui.KeyHint{Key: "?", Desc: "help"},
 		ui.KeyHint{Key: "q", Desc: "quit"},
 	)
@@ -655,21 +699,26 @@ func helpKeys() []ui.KeyHint {
 		{Key: "↑/k, ↓/j", Desc: "move the selection"},
 		{Key: "g / G", Desc: "first / last row"},
 		{Key: "pgup/pgdn", Desc: "scroll a page"},
-		{Key: "r", Desc: "reload"},
+		{Key: "r / ctrl+r", Desc: "reload (ctrl+r on the nodes screen)"},
 		{Key: "", Desc: ""},
-		{Key: "N", Desc: "create a new interface from zero (keygen, conf, up)"},
+		{Key: "N", Desc: "create a new interface from zero (keygen, conf, up); as"},
+		{Key: "", Desc: "a forwarding server: ip_forward, FORWARD -I, MASQUERADE,"},
+		{Key: "", Desc: "and the listen port opened in INPUT when it is closed"},
 		{Key: "u / d", Desc: "bring the selected interface up / down"},
 		{Key: "w", Desc: "save the interface's runtime config (wg-quick save)"},
 		{Key: "a / x", Desc: "add / remove a peer on the interface (add: end with \"psk\""},
 		{Key: "", Desc: "to also generate a pre-shared key file)"},
 		{Key: "n", Desc: "create a Headscale user (users) / pre-auth key (keys)"},
 		{Key: "e / m / x", Desc: "expire / rename / delete the selected node"},
+		{Key: "r (nodes)", Desc: "approve or revoke the node's advertised routes"},
+		{Key: "", Desc: "(subnet routes; \"exit\" is the exit node)"},
 		{Key: "S", Desc: "server settings (users): transport (plain http, Let's"},
 		{Key: "", Desc: "Encrypt, own certificate, reverse proxy), server_url,"},
 		{Key: "", Desc: "listen_addr and dns.base_domain, then a restart (or an"},
 		{Key: "", Desc: "enable, when the unit is disabled)"},
-		{Key: "O", Desc: "identity provider (users): issuer, client id, secret,"},
-		{Key: "", Desc: "allow lists, scope, pkce — then a restart"},
+		{Key: "O", Desc: "identity provider (users): Google or generic OIDC, then"},
+		{Key: "", Desc: "issuer, client id, secret, allow lists (all non-empty"},
+		{Key: "", Desc: "lists must match), scope, pkce — then a restart"},
 		{Key: "F", Desc: "fix ownership (users): chown headscale's state files, and"},
 		{Key: "", Desc: "the secret and backup this tool writes, to who needs them"},
 		{Key: "", Desc: ""},

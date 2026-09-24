@@ -59,6 +59,7 @@ func TestCreateInterfaceWizard(t *testing.T) {
 	// The port input is prefilled with 51820; submit it as-is.
 	model, _ = a.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	a = model.(*app)
+	a = pick(t, a, roleEndpoint)
 
 	// Step 1: keygen. The preview is a single root shell and the dialog never
 	// carries a key value.
@@ -110,6 +111,7 @@ func TestCreateInterfaceWizardCancelStopsTheChain(t *testing.T) {
 	a = typeAndEnter(t, a, "192.0.2.9/24")
 	model, _ = a.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	a = model.(*app)
+	a = pick(t, a, roleEndpoint)
 	if a.after == nil {
 		t.Fatal("the keygen confirm should have armed the next step")
 	}

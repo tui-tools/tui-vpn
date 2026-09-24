@@ -9,8 +9,9 @@
 // the confirm dialog showed is provably the command that ran. It drives a
 // handful of programs — `wg`, `wg-quick`, `headscale`, read-only `ip`,
 // `sh`/`install`/`cat` for the bootstrap and control-plane-configuration
-// flows, `systemctl` for the headscale unit, and `curl` for the one read that
-// leaves the machine (an IdP's discovery document) — but every one of them
+// flows, `systemctl` for the headscale unit, `iptables` for the host
+// firewall, and `curl` for the one read that leaves the machine (an IdP's
+// discovery document) — but every one of them
 // goes through the same runner boundary.
 //
 // PRIVACY: a private key never leaves this package on an argv or in any
@@ -87,6 +88,13 @@ type Device struct {
 	// Up reports whether the link is up, as `ip link` sees it.
 	Up    bool   `json:"up"`
 	Peers []Peer `json:"peers"`
+	// Forwarding reports that the host's FORWARD chain accepts traffic
+	// coming in on this interface: it is a forwarding server (see
+	// ForwardingRules). Read from the live ruleset.
+	Forwarding bool `json:"forwarding"`
+	// PortVerdict is what the host's INPUT chain does with a handshake to
+	// ListenPort; unknown when the ruleset could not be read.
+	PortVerdict Verdict `json:"portVerdict,omitempty"`
 }
 
 // Peer is one entry under an interface.
@@ -112,8 +120,13 @@ type Peer struct {
 type Headscale struct {
 	// Present reports that the headscale binary was found and answered.
 	Present bool `json:"present"`
-	// Error carries why a present control plane could not be read.
+	// Error carries why a present control plane could not be read: the CLI's
+	// own error, or — when the unit is known to be stopped and the CLI was
+	// not asked at all — what to do about it (see NotRunningMessage).
 	Error string `json:"error,omitempty"`
+	// NotRunning reports that the lists were not read because the headscale
+	// unit is not running; Error then says how to start it.
+	NotRunning bool `json:"notRunning,omitempty"`
 	// OIDCInferred reports that user identity looks like it comes from an
 	// external OpenID Connect provider — guessed from a user carrying a
 	// provider, or a node that registered through OIDC. It is the fallback
@@ -164,6 +177,13 @@ type Node struct {
 	Expiry         time.Time `json:"expiry,omitempty"`
 	Online         bool      `json:"online"`
 	RegisterMethod string    `json:"registerMethod,omitempty"`
+	// AvailableRoutes are the routes the node advertises (subnet routes, and
+	// 0.0.0.0/0 with ::/0 for an exit node); ApprovedRoutes the ones an admin
+	// approved; SubnetRoutes the ones actually served, advertised and
+	// approved. See routes.go.
+	AvailableRoutes []string `json:"availableRoutes,omitempty"`
+	ApprovedRoutes  []string `json:"approvedRoutes,omitempty"`
+	SubnetRoutes    []string `json:"subnetRoutes,omitempty"`
 }
 
 // PreAuthKey is a key that lets a machine register itself for a user without a
@@ -192,6 +212,28 @@ type State struct {
 	Devices []Device `json:"devices"`
 
 	Headscale Headscale `json:"headscale"`
+
+	// Routes is `ip -j route`, the source of the networks and the egress a
+	// new forwarding server proposes. Firewall is `iptables -S`. Neither is
+	// serialised: they are addresses of this host.
+	Routes   []Route  `json:"-"`
+	Firewall Firewall `json:"-"`
+	// TUIFirewall reports that tui-firewall is installed: the tool that
+	// opens a port for good, which the listen-port step names.
+	TUIFirewall bool `json:"-"`
+}
+
+// annotateFirewall fills each device's forwarding flag and listen-port
+// verdict from the firewall that was read.
+func (s *State) annotateFirewall() {
+	for i := range s.Devices {
+		d := &s.Devices[i]
+		d.Forwarding = s.Firewall.Forwards(d.Name)
+		d.PortVerdict = VerdictUnknown
+		if d.ListenPort > 0 {
+			d.PortVerdict = s.Firewall.UDPPortVerdict(d.ListenPort)
+		}
+	}
 }
 
 // Device returns the interface by name.
@@ -232,6 +274,8 @@ const (
 	// ActionServerSettings writes server_url and listen_addr into headscale's
 	// configuration and restarts the service.
 	ActionServerSettings Action = "server-settings"
+	// ActionApproveRoutes sets the routes a node is approved to serve.
+	ActionApproveRoutes Action = "approve-routes"
 	// ActionOIDCSettings writes the oidc section — and the client secret into
 	// its own root-only file — and restarts the service.
 	ActionOIDCSettings Action = "oidc-settings"
@@ -396,6 +440,13 @@ func BuildGenerateInterfaceKey(iface string) (runner.Command, error) {
 // inline the private key (root-only, mode 600) — standard wg-quick behaviour,
 // warned about in that action's confirm dialog.
 func InterfaceConf(iface, address string, listenPort int) (string, error) {
+	return InterfaceConfWith(iface, address, listenPort, nil)
+}
+
+// InterfaceConfWith is InterfaceConf for an interface that may be a
+// forwarding server: with a spec, the PostUp and PostDown lines of
+// ForwardingRules follow the key line.
+func InterfaceConfWith(iface, address string, listenPort int, fwd *ForwardSpec) (string, error) {
 	if !ValidInterface(iface) {
 		return "", fmt.Errorf("not a valid interface name: %q", iface)
 	}
@@ -405,13 +456,31 @@ func InterfaceConf(iface, address string, listenPort int) (string, error) {
 	if listenPort < 1 || listenPort > 65535 {
 		return "", fmt.Errorf("not a valid listen port: %d", listenPort)
 	}
-	return fmt.Sprintf(`[Interface]
+	conf := fmt.Sprintf(`[Interface]
 # The private key lives in %s (root, mode 600) and is loaded
 # at up time; this file deliberately contains no secret.
 Address = %s
 ListenPort = %d
 PostUp = wg set %%i private-key %s
-`, KeyPath(iface), address, listenPort, KeyPath(iface)), nil
+`, KeyPath(iface), address, listenPort, KeyPath(iface))
+	if fwd == nil {
+		return conf, nil
+	}
+	up, down, err := ForwardingRules(address, *fwd)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	b.WriteString(conf)
+	b.WriteString("# Forwarding server: peers reach the networks behind this host through " +
+		fwd.Egress + ".\n# ip_forward is left on at down; something else may rely on it.\n")
+	for _, line := range up {
+		b.WriteString("PostUp = " + line + "\n")
+	}
+	for _, line := range down {
+		b.WriteString("PostDown = " + line + "\n")
+	}
+	return b.String(), nil
 }
 
 // BuildWriteInterfaceConf assembles the install that writes the configuration

@@ -34,6 +34,14 @@ type Fake struct {
 	// headscale's state files and the files this tool writes. chown applies to
 	// it, and the ownership check reads it, exactly like the real ones.
 	stats map[string]FileStat
+	// firewall is the demo's `iptables -S`, as lines: the ruleset of a cloud
+	// image whose INPUT and FORWARD chains end in REJECT, with the demo
+	// interface's port opened and its forwarding rules in place. The
+	// previewed iptables commands edit it, and every Load parses it.
+	firewall []string
+	// confs are the configuration files the demo wrote for new interfaces,
+	// so bringing one up applies its PostUp rules the way wg-quick would.
+	confs map[string]string
 	run   *runner.Fake
 }
 
@@ -60,14 +68,16 @@ func DemoPeer2Pub() string { return demoPeer2Pub }
 
 // NewFake returns a Fake preloaded with a plausible network: one interface with
 // two peers — one mid-handshake, one that has never connected — and a Headscale
-// control plane with two users, three nodes and a pre-auth key.
+// control plane with two users, four nodes (one of them a subnet router with
+// routes pending) and a pre-auth key.
 func NewFake() *Fake {
 	// The demo unit is running but disabled: started by hand after the
 	// package installed it, the way a fresh install usually ends up, and
 	// gone after the next reboot. It is what makes the enable at the end of
 	// S and O visible under --demo.
 	f := &Fake{state: demoState(), config: demoHeadscaleConfig,
-		serviceState: "active", serviceEnabled: "disabled", stats: demoStats()}
+		serviceState: "active", serviceEnabled: "disabled", stats: demoStats(),
+		firewall: append([]string(nil), demoFirewall...), confs: map[string]string{}}
 	f.run = &runner.Fake{Hook: f.apply}
 	f.reloadControlPlane()
 	return f
@@ -254,11 +264,21 @@ func (f *Fake) Run(ctx context.Context, cmd runner.Command) (string, error) {
 // Commands returns every command the fake was asked to run, for the tests.
 func (f *Fake) Commands() []runner.Command { return f.run.Ran }
 
-// Load returns a copy of the sample state.
+// Load returns a copy of the sample state. With the demo unit stopped it
+// answers the way the real backend does: the configuration and the unit's
+// state, and no lists, because the CLI would have nothing to talk to.
 func (f *Fake) Load(_ context.Context) (State, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.state, nil
+	state := f.state
+	state.Devices = append([]Device(nil), f.state.Devices...)
+	state.Firewall = ParseIptablesRules(strings.Join(f.firewall, "\n"))
+	state.annotateFirewall()
+	if msg := NotRunningMessage(state.Headscale.ControlPlane); msg != "" {
+		state.Headscale.Error, state.Headscale.NotRunning = msg, true
+		state.Headscale.Users, state.Headscale.Nodes, state.Headscale.PreAuthKeys = nil, nil, nil
+	}
+	return state, nil
 }
 
 // apply mutates the sample state the way the real command would. It is the
@@ -296,6 +316,8 @@ func (f *Fake) apply(cmd runner.Command) (string, error) {
 		return f.deleteNode(argv[4])
 	case len(argv) == 6 && argv[0] == "headscale" && argv[1] == "nodes" && argv[2] == "rename":
 		return f.renameNode(argv[4], argv[5])
+	case len(argv) >= 6 && argv[0] == "headscale" && argv[1] == "nodes" && argv[2] == "approve-routes":
+		return f.approveRoutes(argv[4], argv[5:])
 	case len(argv) >= 7 && argv[0] == "headscale" && argv[1] == "preauthkeys" && argv[2] == "create":
 		return f.createPreAuthKey(argv)
 	case len(argv) == 4 && argv[0] == "headscale" && argv[1] == "users" && argv[2] == "create":
@@ -326,6 +348,8 @@ func (f *Fake) apply(cmd runner.Command) (string, error) {
 		return f.chown(argv)
 	case len(argv) >= 2 && argv[0] == "curl":
 		return demoDiscoveryDocument, nil
+	case len(argv) >= 3 && argv[0] == "iptables":
+		return "", f.iptables(argv[1:])
 	default:
 		return "", fmt.Errorf("demo backend does not know how to apply %q", cmd.String())
 	}
@@ -341,9 +365,90 @@ func hasToken(argv []string, token string) bool {
 	return false
 }
 
+// demoFirewall is the demo host's `iptables -S`: the shape of a cloud
+// provider's Ubuntu image, whose INPUT and FORWARD chains end in REJECT, with
+// wg0's listen port opened and its forwarding rules inserted above the
+// REJECT. Every address is from a documentation range.
+var demoFirewall = []string{
+	"-P INPUT ACCEPT",
+	"-P FORWARD DROP",
+	"-P OUTPUT ACCEPT",
+	"-A INPUT -p udp -m udp --dport 51820 -j ACCEPT",
+	"-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT",
+	"-A INPUT -p icmp -j ACCEPT",
+	"-A INPUT -i lo -j ACCEPT",
+	"-A INPUT -p tcp -m state --state NEW -m tcp --dport 22 -j ACCEPT",
+	"-A INPUT -j REJECT --reject-with icmp-host-prohibited",
+	"-A FORWARD -d 198.51.100.0/24 -i wg0 -o eth0 -j ACCEPT",
+	"-A FORWARD -i eth0 -o wg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
+	"-A FORWARD -j REJECT --reject-with icmp-host-prohibited",
+}
+
+// iptables applies an insert or a delete to the demo's filter table. The nat
+// table is accepted and not modelled: nothing on screen reads it.
+func (f *Fake) iptables(args []string) error {
+	if len(args) >= 2 && args[0] == "-t" {
+		if args[1] != "filter" {
+			return nil
+		}
+		args = args[2:]
+	}
+	if len(args) < 3 {
+		return fmt.Errorf("iptables: not enough arguments")
+	}
+	op, chain, rule := args[0], args[1], "-A "+args[1]+" "+strings.Join(args[2:], " ")
+	switch op {
+	case "-I":
+		// Insert at the top of the chain: right after its policy lines.
+		at := 0
+		for i, line := range f.firewall {
+			if strings.HasPrefix(line, "-P ") || strings.HasPrefix(line, "-N ") {
+				at = i + 1
+			}
+		}
+		for i, line := range f.firewall {
+			if strings.HasPrefix(line, "-A "+chain+" ") {
+				at = i
+				break
+			}
+		}
+		f.firewall = append(f.firewall[:at], append([]string{rule}, f.firewall[at:]...)...)
+	case "-D":
+		for i, line := range f.firewall {
+			if line == rule {
+				f.firewall = append(f.firewall[:i], f.firewall[i+1:]...)
+				return nil
+			}
+		}
+		return fmt.Errorf("iptables: Bad rule (does a matching rule exist in that chain?)")
+	default:
+		return fmt.Errorf("iptables: the demo does not model %s", op)
+	}
+	return nil
+}
+
+// applyConfHooks runs the iptables lines of a conf's PostUp (up) or PostDown
+// (down), the way wg-quick would, with %i replaced by the interface.
+func (f *Fake) applyConfHooks(iface string, up bool) {
+	hook := "PostDown = "
+	if up {
+		hook = "PostUp = "
+	}
+	for _, line := range strings.Split(f.confs[iface], "\n") {
+		cmd, ok := strings.CutPrefix(strings.TrimSpace(line), hook)
+		if !ok || !strings.HasPrefix(cmd, "iptables ") {
+			continue
+		}
+		_ = f.iptables(strings.Fields(strings.ReplaceAll(cmd, "%i", iface))[1:]) // best effort, like wg-quick's own hooks
+	}
+}
+
 func (f *Fake) setUp(iface string, up bool) (string, error) {
 	for i := range f.state.Devices {
 		if f.state.Devices[i].Name == iface {
+			if f.state.Devices[i].Up != up {
+				f.applyConfHooks(iface, up)
+			}
 			f.state.Devices[i].Up = up
 			if up {
 				return "[#] interface " + iface + " up", nil
@@ -414,6 +519,7 @@ func (f *Fake) writeConf(path, conf string) (string, error) {
 			_, _ = fmt.Sscanf(strings.TrimSpace(v), "%d", &port) // best-effort: 0 on mismatch is fine for the fake
 		}
 	}
+	f.confs[name] = conf
 	f.state.Devices = append(f.state.Devices, Device{
 		Name:          name,
 		PublicKey:     demoNewIfacePub,
@@ -455,6 +561,35 @@ func (f *Fake) deleteNode(id string) (string, error) {
 			f.state.Headscale.Nodes = append(nodes[:i], nodes[i+1:]...)
 			return "Node destroyed", nil
 		}
+	}
+	return "", fmt.Errorf("no such node: %s", id)
+}
+
+// approveRoutes applies `headscale nodes approve-routes`: the list replaces
+// the node's approvals, and what is served is what is both advertised and
+// approved.
+func (f *Fake) approveRoutes(id string, args []string) (string, error) {
+	var routes []string
+	switch {
+	case len(args) == 1 && args[0] == "--routes=":
+	case len(args) == 2 && args[0] == "--routes":
+		routes = strings.Split(args[1], ",")
+	default:
+		return "", fmt.Errorf("approve-routes: unexpected arguments %q", args)
+	}
+	for i := range f.state.Headscale.Nodes {
+		n := &f.state.Headscale.Nodes[i]
+		if n.ID != id {
+			continue
+		}
+		n.ApprovedRoutes = routes
+		n.SubnetRoutes = nil
+		for _, r := range NodeRoutes(*n) {
+			if r.Advertised && r.Approved {
+				n.SubnetRoutes = append(n.SubnetRoutes, r.Route)
+			}
+		}
+		return "Node updated", nil
 	}
 	return "", fmt.Errorf("no such node: %s", id)
 }
@@ -560,6 +695,14 @@ func (f *Fake) createUser(name string) (string, error) {
 func demoState() State {
 	now := time.Now()
 	return State{
+		// The demo host: a VM on 198.51.100.0/24 behind eth0, with wg0's
+		// peers on 192.0.2.0/24 and a container bridge that is down.
+		Routes: []Route{
+			{Dst: "default", Gateway: "198.51.100.1", Dev: "eth0"},
+			{Dst: "198.51.100.0/24", Dev: "eth0", Scope: "link"},
+			{Dst: "192.0.2.0/24", Dev: "wg0", Scope: "link"},
+			{Dst: "203.0.113.0/24", Dev: "docker0", Scope: "link", Flags: []string{"linkdown"}},
+		},
 		WGAvailable: true,
 		Devices: []Device{{
 			Name:          "wg0",
@@ -617,6 +760,17 @@ func demoState() State {
 					RegisterMethod: "REGISTER_METHOD_AUTH_KEY",
 					// Already expired: the row the operator is meant to notice.
 					Expiry: now.Add(-2 * 24 * time.Hour)},
+				// A subnet router in the office: one route approved, one
+				// still pending, and an exit node nobody approved yet.
+				{ID: "4", Name: "office-gw", GivenName: "office-gw", User: "ana",
+					IPAddresses: []string{"192.0.2.5"},
+					LastSeen:    now.Add(-20 * time.Second), Online: true,
+					RegisterMethod: "REGISTER_METHOD_AUTH_KEY",
+					Expiry:         time.Time{},
+					AvailableRoutes: []string{"198.51.100.0/24", "203.0.113.0/24",
+						"0.0.0.0/0", "::/0"},
+					ApprovedRoutes: []string{"198.51.100.0/24"},
+					SubnetRoutes:   []string{"198.51.100.0/24"}},
 			},
 			PreAuthKeys: []PreAuthKey{
 				{ID: "1", User: "ana", KeyPrefix: "0123456789", Reusable: true,

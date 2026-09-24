@@ -66,7 +66,7 @@ screenshots: build
 	python3 $(KIT)/tools/render-screenshots.py \
 		--bin $(BIN)/$(TOOL) --name $(TOOL) --out docs/screenshots \
 		--screen status= --screen peers=2 --screen users=3 \
-		--screen headscale=4 --screen help=?
+		--screen headscale=4G --screen help=?
 
 ## readme: regenerate the generated README sections from tool.json.
 readme:

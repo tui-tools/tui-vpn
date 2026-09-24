@@ -3,7 +3,7 @@
   "name": "tui-vpn",
   "binary": "tui-vpn",
   "tagline": "WireGuard and its control plane, from the terminal",
-  "description": "WireGuard from the terminal, together with the self-hosted control plane that decides who is allowed onto it.\n\nThe status screen reads your interfaces straight from `wg show all dump`: peers, endpoints, handshakes, transfer, allowed IPs and keepalive. Every change, from creating an interface to adding a peer, is previewed as the exact command line and applied only after you confirm it. A private key is never shown, typed, or put on a command line.\n\nWith a [Headscale](https://headscale.net) control plane it also manages users, nodes and pre-auth keys, and configures the server itself: `S` sets how clients reach it (plain http, Let's Encrypt, an own certificate or a reverse proxy, plus the MagicDNS domain), `O` writes the `oidc` section, each as a minimal diff of `/etc/headscale/config.yaml` followed by a restart, or the enable a disabled unit needs. `F` fixes state files the service account does not own. The OIDC client secret is typed masked, written mode 600 to its own file, and never displayed again.\n\nRun it with `--demo` to see every screen with nothing installed.",
+  "description": "WireGuard from the terminal, together with the self-hosted control plane that decides who is allowed onto it.\n\nThe status screen reads your interfaces straight from `wg show all dump`: peers, endpoints, handshakes, transfer, allowed IPs and keepalive. Every change, from creating an interface (a forwarding server included, with its iptables rules) to adding a peer, is previewed as the exact command line and applied only after you confirm it. A private key is never shown, typed, or put on a command line.\n\nWith a [Headscale](https://headscale.net) control plane it also manages users, nodes (and their advertised routes) and pre-auth keys, and configures the server itself: `S` sets how clients reach it (plain http, Let's Encrypt, an own certificate or a reverse proxy, plus the MagicDNS domain), `O` writes the `oidc` section, each as a minimal diff of `/etc/headscale/config.yaml` followed by a restart, or the enable a disabled unit needs. `F` fixes state files the service account does not own. The OIDC client secret is typed masked, written mode 600 to its own file, and never displayed again.\n\nRun it with `--demo` to see every screen with nothing installed.",
   "category": "network",
   "homepage": "https://github.com/tui-tools/tui-vpn",
   "repo": "https://github.com/tui-tools/tui-vpn",
@@ -17,7 +17,7 @@
   "screenshots": [
     {
       "path": "docs/screenshots/tui-vpn-status.png",
-      "caption": "The status screen: WireGuard interfaces, their state and peer counts, read from wg"
+      "caption": "The status screen: WireGuard interfaces, their state, whether the host firewall opens the port and forwards for them, and peer counts"
     },
     {
       "path": "docs/screenshots/tui-vpn-peers.png",
@@ -29,7 +29,7 @@
     },
     {
       "path": "docs/screenshots/tui-vpn-headscale.png",
-      "caption": "The Headscale nodes screen: who owns each node and its state, above the OIDC identity note"
+      "caption": "The Headscale nodes screen: who owns each node, its state, and its advertised routes with what is approved and what is pending"
     },
     {
       "path": "docs/screenshots/tui-vpn-help.png",
@@ -43,7 +43,7 @@
     },
     {
       "key": "N",
-      "action": "Create a new interface from zero (keygen, conf, optional up)"
+      "action": "Create an interface: endpoint or forwarding server (keygen, conf, port, up)"
     },
     {
       "key": "u / d",
@@ -63,11 +63,15 @@
     },
     {
       "key": "S / O",
-      "action": "Control plane (users screen): server settings and transport / identity provider (OIDC)"
+      "action": "Control plane (users screen): server and transport / OIDC provider (Google, generic)"
     },
     {
       "key": "F",
       "action": "Fix ownership of headscale's state, secret and backup files (users screen)"
+    },
+    {
+      "key": "r (nodes)",
+      "action": "Approve / revoke a node's advertised routes (subnet router, exit node)"
     },
     {
       "key": "e / m / x",
@@ -75,7 +79,7 @@
     },
     {
       "key": "r / ctrl+r",
-      "action": "Reload"
+      "action": "Reload (ctrl+r on the nodes screen, where r is routes)"
     },
     {
       "key": "?",
@@ -171,11 +175,11 @@
     }
   },
   "security": {
-    "needs_sudo": "Reading WireGuard needs CAP_NET_ADMIN, the Headscale CLI talks to a root-owned socket, and config.yaml and headscale's state directory are root-only, so those reads escalate; `ip link` and `systemctl is-active` do not. Every mutation escalates, previewed and confirmed first.",
+    "needs_sudo": "Reading WireGuard needs CAP_NET_ADMIN, the Headscale CLI talks to a root-owned socket, and config.yaml, headscale's state directory and the iptables ruleset are root-only, so those reads escalate; `ip` and `systemctl is-active` do not. Every mutation escalates, previewed and confirmed first.",
     "preview_before_run": true,
     "no_daemon": true,
     "no_network": false,
-    "no_network_note": "One outbound request, on demand only: when you configure an identity provider it fetches the issuer's public /.well-known/openid-configuration with curl, to check the URL before saving it. Read-only, unprivileged, and a failure is a warning, not a refusal. Nothing else leaves the machine.",
+    "no_network_note": "On demand only: configuring an identity provider (or --check --probe-issuer) fetches the issuer's public /.well-known/openid-configuration with curl to check the URL. Read-only, unprivileged; a failure is a warning, not a refusal. Nothing else leaves the machine.",
     "static_binary": true,
     "signed_releases": false,
     "config_paths": [

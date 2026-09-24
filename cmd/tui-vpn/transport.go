@@ -68,7 +68,17 @@ func (a *app) tookTransport(choice string) tea.Cmd {
 		a.setStatus(ui.StatusError, "not a transport: "+choice)
 		return nil
 	}
-	a.askServerURL(a.state.Headscale.ControlPlane.ServerURL, nil)
+	// The proposed value is the one in the file; when that one is malformed
+	// (written by hand, or before the host check existed), the step opens with
+	// the reason instead of offering it as if it were fine.
+	current := a.state.Headscale.ControlPlane.ServerURL
+	var problem error
+	if current != "" {
+		if p := wireguard.ServerURLProblem(current); p != "" {
+			problem = fmt.Errorf("the server_url in the file is not valid: %s", p)
+		}
+	}
+	a.askServerURL(current, problem)
 	return nil
 }
 
@@ -145,7 +155,12 @@ func (a *app) tookServerURL(value string) tea.Cmd {
 		a.state.Headscale.ControlPlane.OIDC.Configured()); warning != "" {
 		a.setStatus(ui.StatusWarn, warning)
 	}
-	a.askListenAddr(a.defaultListenAddr(), nil)
+	proposed := a.defaultListenAddr()
+	var problem error
+	if p := wireguard.ListenAddrProblem(proposed); p != "" {
+		problem = fmt.Errorf("the listen_addr in the file is not valid: %s", p)
+	}
+	a.askListenAddr(proposed, problem)
 	return nil
 }
 
@@ -384,7 +399,8 @@ func (a *app) transportIntro(s wireguard.TransportSettings) string {
 		a.state.Headscale.ControlPlane.OIDC.Configured()); warning != "" {
 		lines = append(lines, "WARNING: "+warning)
 	}
-	lines = append(lines, "", "Step 1 of 2 — rewrite "+wireguard.HeadscaleConfigPath+
+	lines = append(lines, "", fmt.Sprintf("Step 1 of %d — rewrite ",
+		1+wireguard.TailSteps(a.state.Headscale.ControlPlane))+wireguard.HeadscaleConfigPath+
 		". Only the lines below change; everything else in the file, comments included, "+
 		"is kept byte for byte.")
 	return strings.Join(lines, "\n")

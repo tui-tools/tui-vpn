@@ -54,7 +54,19 @@ func TestFixturesCarryNoRealAddress(t *testing.T) {
 				}
 				for _, n := range nodes {
 					addrs = append(addrs, prefixAddrs(n.IPAddresses)...)
+					addrs = append(addrs, prefixAddrs(n.AvailableRoutes)...)
+					addrs = append(addrs, prefixAddrs(n.ApprovedRoutes)...)
 				}
+			case strings.HasPrefix(name, "ip-route"):
+				routes, err := ParseRoutes(data)
+				if err != nil {
+					t.Fatalf("parse: %v", err)
+				}
+				for _, r := range routes {
+					addrs = append(addrs, prefixAddrs([]string{r.Dst, r.Gateway})...)
+				}
+			case strings.HasPrefix(name, "iptables"):
+				addrs = append(addrs, ruleAddrs(ParseIptablesRules(string(data)))...)
 			default:
 				// Users and pre-auth keys carry no addresses.
 				return
@@ -83,7 +95,33 @@ func TestDemoDataCarriesNoRealAddress(t *testing.T) {
 		for _, a := range prefixAddrs(n.IPAddresses) {
 			assertDocumentationAddress(t, a)
 		}
+		for _, a := range prefixAddrs(append(n.AvailableRoutes, n.ApprovedRoutes...)) {
+			assertDocumentationAddress(t, a)
+		}
 	}
+	for _, r := range state.Routes {
+		for _, a := range prefixAddrs([]string{r.Dst, r.Gateway}) {
+			assertDocumentationAddress(t, a)
+		}
+	}
+	for _, a := range ruleAddrs(ParseIptablesRules(strings.Join(demoFirewall, "\n"))) {
+		assertDocumentationAddress(t, a)
+	}
+}
+
+// ruleAddrs is every -s and -d address in a ruleset.
+func ruleAddrs(fw Firewall) []netip.Addr {
+	var addrs []netip.Addr
+	for _, rules := range fw.Rules {
+		for _, rule := range rules {
+			for i := 0; i+1 < len(rule); i++ {
+				if rule[i] == "-s" || rule[i] == "-d" {
+					addrs = append(addrs, prefixAddrs([]string{rule[i+1]})...)
+				}
+			}
+		}
+	}
+	return addrs
 }
 
 // TestFixturesCarryNoHostName checks the other half of the promise on whatever
@@ -107,7 +145,9 @@ func TestFixturesCarryNoHostName(t *testing.T) {
 
 func assertDocumentationAddress(t *testing.T, addr netip.Addr) {
 	t.Helper()
-	if !addr.IsValid() || addr.IsLoopback() || addr.IsUnspecified() {
+	// Link-local addresses (a cloud's metadata service at 169.254.169.254)
+	// are the same on every machine and name none of them.
+	if !addr.IsValid() || addr.IsLoopback() || addr.IsUnspecified() || addr.IsLinkLocalUnicast() {
 		return
 	}
 	for _, prefix := range documentationRanges {

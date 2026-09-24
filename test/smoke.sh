@@ -198,6 +198,43 @@ check "check --demo has no field that could hold a secret" \
   "$bin --demo --check | grep -icE '\"(oidc)?[a-z]*clientsecret\": \"' || true" \
   '^0$'
 
+# --- the host firewall -----------------------------------------------------
+#
+# A WireGuard server behind an INPUT chain that ends in REJECT takes no
+# handshake, and one whose FORWARD chain ends in REJECT forwards nothing. The
+# demo's interface has its port open and forwards; on a real host the ruleset
+# is read through sudo -n, and a read that failed says "unknown", never
+# "accept".
+check "check --demo says the demo interface's port is accepted" \
+  "$bin --demo --check" \
+  '"listenPortInput": "accept"'
+
+check "check --demo says the demo interface forwards" \
+  "$bin --demo --check" \
+  '"forwarding": true'
+
+if command -v iptables >/dev/null 2>&1 && sudo -n iptables -S >/dev/null 2>&1; then
+  check "check read the host firewall" \
+    "sudo -n $bin --check" \
+    '"firewallChecked": true'
+fi
+
+check "check without privilege reports the firewall as unread, not open" \
+  "$bin --sudo '' --check | grep -c '\"listenPortInput\": \"accept\"' || true" \
+  '^0$'
+
+# --- node routes -----------------------------------------------------------
+#
+# A subnet router's routes stay pending until approved; --check counts them per
+# node and never prints the networks.
+check "check --demo counts the demo router's pending exit node" \
+  "$bin --demo --check" \
+  '"exitNode": "pending"'
+
+check "check --demo prints no route" \
+  "$bin --demo --check | grep -cE '0\.0\.0\.0/0|203\.0\.113\.' || true" \
+  '^0$'
+
 # --- compatibility evidence ------------------------------------------------
 #
 # record_compat turns this run into the evidence `tested` is generated from:

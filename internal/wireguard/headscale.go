@@ -75,6 +75,10 @@ func ParseNodes(data []byte) ([]Node, error) {
 		// ("oidc") and as the protobuf enum's integer in others (3 = OIDC), so
 		// accept either and normalise it below.
 		RegisterMethod flexString `json:"registerMethod"`
+		// The route lists of headscale 0.26+, omitted when empty.
+		AvailableRoutes []string `json:"availableRoutes"`
+		ApprovedRoutes  []string `json:"approvedRoutes"`
+		SubnetRoutes    []string `json:"subnetRoutes"`
 	}
 	if err := json.Unmarshal(raw, &rows); err != nil {
 		return nil, fmt.Errorf("nodes: %w", err)
@@ -91,6 +95,10 @@ func ParseNodes(data []byte) ([]Node, error) {
 			Expiry:         r.Expiry.time(),
 			Online:         r.Online,
 			RegisterMethod: normalizeRegisterMethod(string(r.RegisterMethod)),
+
+			AvailableRoutes: r.AvailableRoutes,
+			ApprovedRoutes:  r.ApprovedRoutes,
+			SubnetRoutes:    r.SubnetRoutes,
 		})
 	}
 	return nodes, nil

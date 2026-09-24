@@ -154,6 +154,8 @@ func TestOIDCFlowNeverShowsTheSecret(t *testing.T) {
 
 	model, _ := a.Update(key("O"))
 	a = model.(*app)
+	// The provider picker opens on the demo's own, a generic OIDC issuer.
+	a = pick(t, a, wireguard.ProviderGeneric.Label)
 	if a.mode != modeInput {
 		t.Fatalf("O did not open the OIDC form (mode %d)", a.mode)
 	}
@@ -305,6 +307,7 @@ func TestOIDCFlowKeepsAnExistingSecret(t *testing.T) {
 
 	model, _ := a.Update(key("O"))
 	a = model.(*app)
+	a = enter(t, a)                                        // provider, preselected
 	a = enter(t, a)                                        // issuer, prefilled
 	a = enter(t, a)                                        // client id, prefilled
 	a = enter(t, a)                                        // client secret, left empty
@@ -364,6 +367,7 @@ func TestCancellingTheOIDCFormForgetsTheSecret(t *testing.T) {
 	a.setScreen(wireguard.ScreenUsers)
 	model, _ := a.Update(key("O"))
 	a = model.(*app)
+	a = enter(t, a) // provider
 	a = enter(t, a) // issuer
 	a = enter(t, a) // client id
 	a = clearAndType(t, a, "a-secret-that-must-not-linger")
@@ -587,5 +591,59 @@ func TestFixOwnershipNeedsACheck(t *testing.T) {
 	}
 	if strings.Contains(a.View(), "ownership   ") {
 		t.Error("the panel reports an ownership it never checked")
+	}
+}
+
+// TestListScreensWithTheUnitStopped is the real case: a fresh package, the
+// unit inactive, and the users, nodes and keys screens used to show the CLI's
+// truncated socket error. They now say the unit is not running and point at S,
+// and creating a user says so instead of running a command that cannot work.
+func TestListScreensWithTheUnitStopped(t *testing.T) {
+	a, fake := fixtureApp(t, "headscale-config.yaml")
+	fake.SetService("inactive", "disabled")
+	state, _ := fake.Load(t.Context())
+	a.state = state
+	for _, screen := range []wireguard.Screen{wireguard.ScreenUsers, wireguard.ScreenNodes,
+		wireguard.ScreenKeys} {
+		a.setScreen(screen)
+		view := a.View()
+		if !strings.Contains(view, "headscale is not running · S configures and starts it") {
+			t.Errorf("screen %d does not say the unit is stopped:\n%s", screen, view)
+		}
+		if strings.Contains(view, "could not read Headscale") {
+			t.Errorf("screen %d still reports a read failure", screen)
+		}
+	}
+	a.setScreen(wireguard.ScreenUsers)
+	model, _ := a.Update(key("n"))
+	a = model.(*app)
+	if a.mode != modeBrowse || !strings.Contains(a.status, "not running") {
+		t.Errorf("n on a stopped unit: mode %d, status %q", a.mode, a.status)
+	}
+
+	// S still works, and on a stopped, disabled unit its tail is the one
+	// enable --now: two steps in all.
+	a = startS(t, a, wireguard.TransportPlainHTTP)
+	a = clearAndType(t, a, "http://203.0.113.10:443")
+	a = enter(t, a)
+	a = clearAndType(t, a, "tailnet.internal")
+	if !strings.Contains(a.confirm.Body, "Step 1 of 2") {
+		t.Errorf("the count is not 1 of 2 for write + enable --now:\n%s", a.confirm.Body)
+	}
+}
+
+// TestStepCountWithEnableAndRestart: a running but disabled unit ends the flow
+// with an enable and a restart, so the write is step 1 of 3.
+func TestStepCountWithEnableAndRestart(t *testing.T) {
+	a := newTestApp(t) // the demo unit is active and disabled
+	a.setScreen(wireguard.ScreenUsers)
+	model, _ := a.Update(key("S"))
+	a = model.(*app)
+	a = enter(t, a)
+	a = clearAndType(t, a, "https://vpn.example.org")
+	a = enter(t, a)
+	a = enter(t, a)
+	if !strings.Contains(a.confirm.Body, "Step 1 of 3") {
+		t.Errorf("the count is not 1 of 3 for write + enable + restart:\n%s", a.confirm.Body)
 	}
 }

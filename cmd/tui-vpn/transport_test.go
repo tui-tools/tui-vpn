@@ -354,3 +354,54 @@ func TestPanelShowsTheRedirectURI(t *testing.T) {
 		t.Errorf("the panel does not flag an http redirect URI:\n%s", a.View())
 	}
 }
+
+// TestServerURLWithAMalformedIPIsRefused is the real case: one digit too many
+// in a public IP was accepted, written and served. The step now reopens with
+// the reason and the typed value still in it.
+func TestServerURLWithAMalformedIPIsRefused(t *testing.T) {
+	a, _ := fixtureApp(t, "headscale-config.yaml")
+	a = startS(t, a, wireguard.TransportPlainHTTP)
+	a = clearAndType(t, a, "http://203.0.113.1000:443")
+	if a.mode != modeInput || a.inputPurpose != inputServerURL {
+		t.Fatalf("the malformed URL was not refused (mode %d, purpose %d)", a.mode, a.inputPurpose)
+	}
+	if a.input.Model.Value() != "http://203.0.113.1000:443" {
+		t.Errorf("the typed value was lost: %q", a.input.Model.Value())
+	}
+	if !strings.Contains(a.input.Help, "not a valid IPv4 address") {
+		t.Errorf("the step does not say why:\n%s", a.input.Help)
+	}
+}
+
+// TestAMalformedServerURLInTheFileIsFlagged: a value written before the check
+// existed is not proposed as if it were fine, and the panel flags it.
+func TestAMalformedServerURLInTheFileIsFlagged(t *testing.T) {
+	a, fake := fixtureApp(t, "headscale-config.yaml")
+	raw := strings.Replace(a.state.Headscale.ControlPlane.Raw,
+		"server_url: http://127.0.0.1:8080", "server_url: http://203.0.113.1000:443", 1)
+	fake.SetConfig(raw)
+	state, _ := fake.Load(t.Context())
+	a.state = state
+	if a.state.Headscale.ControlPlane.ServerURL != "http://203.0.113.1000:443" {
+		t.Fatalf("fixture edit did not apply: %q", a.state.Headscale.ControlPlane.ServerURL)
+	}
+	if !strings.Contains(a.serverURLWarning(a.state.Headscale.ControlPlane.ServerURL),
+		"not valid") {
+		t.Error("the panel warning does not flag the malformed host")
+	}
+	a = startS(t, a, wireguard.TransportPlainHTTP)
+	if !strings.Contains(a.input.Help, "in the file is not valid") {
+		t.Errorf("the prefilled server_url is offered without its problem:\n%s", a.input.Help)
+	}
+}
+
+// TestIssuerWithAMalformedHostIsRefused: the issuer reuses the same check.
+func TestIssuerWithAMalformedHostIsRefused(t *testing.T) {
+	a, _ := fixtureApp(t, "headscale-config.yaml")
+	if cmd := a.tookOIDCIssuer("https://203.0.113.1000/realms/x"); cmd != nil {
+		t.Fatal("unexpected command")
+	}
+	if !strings.Contains(a.status, "not a valid IPv4 address") {
+		t.Errorf("status = %q", a.status)
+	}
+}

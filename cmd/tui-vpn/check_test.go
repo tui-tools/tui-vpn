@@ -49,7 +49,7 @@ func TestRunCheckPrintsOneReadOfEverything(t *testing.T) {
 	if never != 1 || fresh != 1 {
 		t.Errorf("handshake ages = %+v, want one fresh and one never", iface.Peers)
 	}
-	if !report.Headscale.Present || report.Headscale.Users != 2 || report.Headscale.Nodes != 3 {
+	if !report.Headscale.Present || report.Headscale.Users != 2 || report.Headscale.Nodes != 4 {
 		t.Errorf("headscale summary is wrong: %+v", report.Headscale)
 	}
 	if !report.Headscale.OIDCConfigured {
@@ -180,5 +180,24 @@ func TestCheckReportsAnUnreachableServerURL(t *testing.T) {
 		if got != tc.loopback {
 			t.Errorf("%s: loopback = %v, want %v", tc.url, got, tc.loopback)
 		}
+	}
+}
+
+// TestCheckWithTheUnitStopped: --check reports the stopped unit as the
+// sentence the screens show, not as the CLI's socket error.
+func TestCheckWithTheUnitStopped(t *testing.T) {
+	fake := wireguard.NewFake()
+	fake.SetService("failed", "enabled")
+	var out strings.Builder
+	if err := runCheck(context.Background(), fake, nil, &out); err != nil {
+		t.Fatal(err)
+	}
+	var report checkReport
+	if err := json.Unmarshal([]byte(out.String()), &report); err != nil {
+		t.Fatal(err)
+	}
+	hs := report.Headscale
+	if !hs.NotRunning || !strings.Contains(hs.Error, "headscale has failed") || hs.Users != 0 {
+		t.Errorf("stopped unit in --check: %+v", hs)
 	}
 }
