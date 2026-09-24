@@ -232,9 +232,17 @@ func (r *Real) loadHeadscale(ctx context.Context, state *State) {
 	// that still has an answer when headscale's own socket does not.
 	hs.ControlPlane = r.loadControlPlane(ctx)
 
+	// With the unit known to be stopped, every CLI read would fail on the
+	// socket; the screens say so instead of showing that failure.
+	if msg := NotRunningMessage(hs.ControlPlane); msg != "" {
+		hs.Error, hs.NotRunning = msg, true
+		state.Headscale = hs
+		return
+	}
+
 	usersOut, err := run.Read(ctx, "headscale", "users", "list", "--output", "json")
 	if err != nil {
-		hs.Error = runner.FirstLine(err.Error())
+		hs.Error = CLIErrorMessage(usersOut, err)
 		state.Headscale = hs
 		return
 	}
@@ -262,6 +270,21 @@ func (r *Real) loadHeadscale(ctx context.Context, state *State) {
 // unit. Neither is fatal: a host where config.yaml cannot be read still shows
 // its users and nodes, and says why the control-plane panel is empty.
 func (r *Real) loadControlPlane(ctx context.Context) ControlPlane {
+	cp := r.readControlPlane(ctx)
+	// The unit's state is read whether or not the file could be: "not
+	// running" is the answer the list screens need even when config.yaml is
+	// unreadable.
+	cp.ServiceState = r.serviceState(ctx)
+	cp.ServiceEnabled = r.serviceEnabled(ctx)
+	if cp.Readable {
+		cp.Ownership = r.checkOwnership(ctx, cp)
+	}
+	return cp
+}
+
+// readControlPlane reads and parses config.yaml, with the account the unit
+// runs as, which the ownership check compares against.
+func (r *Real) readControlPlane(ctx context.Context) ControlPlane {
 	cp := ControlPlane{ConfigPath: HeadscaleConfigPath}
 
 	run, err := r.runnerFor("cat")
@@ -280,10 +303,7 @@ func (r *Real) loadControlPlane(ctx context.Context) ControlPlane {
 		return cp
 	}
 	cp = parsed
-	cp.ServiceState = r.serviceState(ctx)
-	cp.ServiceEnabled = r.serviceEnabled(ctx)
 	cp.ServiceUser, cp.ServiceGroup = r.serviceAccount(ctx)
-	cp.Ownership = r.checkOwnership(ctx, cp)
 	return cp
 }
 

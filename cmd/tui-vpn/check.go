@@ -73,6 +73,9 @@ type peerSummary struct {
 type hsSummary struct {
 	Present bool   `json:"present"`
 	Error   string `json:"error,omitempty"`
+	// NotRunning reports that the lists were not read because the headscale
+	// unit is stopped; Error then says how to start it.
+	NotRunning bool `json:"notRunning,omitempty"`
 	// OIDCConfigured is read from headscale's configuration: an issuer and a
 	// client id are what make identity federated.
 	OIDCConfigured bool `json:"oidcConfigured"`
@@ -220,6 +223,7 @@ func summariseHS(hs wireguard.Headscale) hsSummary {
 	summary := hsSummary{
 		Present:        hs.Present,
 		Error:          hs.Error,
+		NotRunning:     hs.NotRunning,
 		OIDCConfigured: hs.OIDCEnabled(),
 		OIDCInferred:   hs.OIDCInferred,
 		OIDCIssuer:     wireguard.URLHost(cp.OIDC.Issuer),

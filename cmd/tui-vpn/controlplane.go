@@ -268,8 +268,11 @@ func (a *app) confirmOIDCChain(msg discoveredMsg) tea.Cmd {
 			"reachable from here."
 	}
 
+	// The count includes the tail: the restart, or the enable and the
+	// restart a running but disabled unit needs.
+	tail := wireguard.TailSteps(a.state.Headscale.ControlPlane)
 	if !a.cpDraft.replaceSecret {
-		return a.confirmConfigWrite(discovery+"\n\nStep 1 of 2 — rewrite "+
+		return a.confirmConfigWrite(discovery+fmt.Sprintf("\n\nStep 1 of %d — rewrite ", 1+tail)+
 			wireguard.HeadscaleConfigPath+". Only the lines below change.", edits)
 	}
 
@@ -281,7 +284,7 @@ func (a *app) confirmOIDCChain(msg discoveredMsg) tea.Cmd {
 	// The value has done its job the moment the command holds it; the draft
 	// gives it up here rather than at the end of the flow.
 	a.cpDraft.forgetSecretValue()
-	cmd := a.openConfirmWith(discovery+"\n\nStep 1 of 3 — write the client secret to "+
+	cmd := a.openConfirmWith(discovery+fmt.Sprintf("\n\nStep 1 of %d — write the client secret to ", 2+tail)+
 		wireguard.OIDCClientSecretPath+", mode 600, owned by "+serviceAccount(cp)+" — the "+
 		"account this host's headscale unit actually runs as, so the service can read it "+
 		"after the restart. The secret travels on the command's standard input, so it is "+
@@ -290,7 +293,7 @@ func (a *app) confirmOIDCChain(msg discoveredMsg) tea.Cmd {
 		secret, err)
 	if a.mode == modeConfirm {
 		a.after = func(string) tea.Cmd {
-			return a.confirmConfigWrite("Step 2 of 3 — rewrite "+
+			return a.confirmConfigWrite(fmt.Sprintf("Step 2 of %d — rewrite ", 2+tail)+
 				wireguard.HeadscaleConfigPath+". Only the lines below change.", edits)
 		}
 	} else {
@@ -345,7 +348,8 @@ func (a *app) startFixOwnership() tea.Cmd {
 // confirmFixStep opens one chown of the chain, and chains the next one — or,
 // after the last, the restart — behind it.
 func (a *app) confirmFixStep(issues []wireguard.OwnershipIssue, cmds []runner.Command, i int) tea.Cmd {
-	body := fmt.Sprintf("Step %d of %d — ", i+1, len(cmds))
+	total := len(cmds) + wireguard.TailSteps(a.state.Headscale.ControlPlane)
+	body := fmt.Sprintf("Step %d of %d — ", i+1, total)
 	if i == 0 {
 		body = ownershipSummary(issues) + "\n\n" + body
 	}

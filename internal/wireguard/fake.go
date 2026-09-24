@@ -254,11 +254,18 @@ func (f *Fake) Run(ctx context.Context, cmd runner.Command) (string, error) {
 // Commands returns every command the fake was asked to run, for the tests.
 func (f *Fake) Commands() []runner.Command { return f.run.Ran }
 
-// Load returns a copy of the sample state.
+// Load returns a copy of the sample state. With the demo unit stopped it
+// answers the way the real backend does: the configuration and the unit's
+// state, and no lists, because the CLI would have nothing to talk to.
 func (f *Fake) Load(_ context.Context) (State, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.state, nil
+	state := f.state
+	if msg := NotRunningMessage(state.Headscale.ControlPlane); msg != "" {
+		state.Headscale.Error, state.Headscale.NotRunning = msg, true
+		state.Headscale.Users, state.Headscale.Nodes, state.Headscale.PreAuthKeys = nil, nil, nil
+	}
+	return state, nil
 }
 
 // apply mutates the sample state the way the real command would. It is the

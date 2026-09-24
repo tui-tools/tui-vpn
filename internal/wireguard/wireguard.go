@@ -112,8 +112,13 @@ type Peer struct {
 type Headscale struct {
 	// Present reports that the headscale binary was found and answered.
 	Present bool `json:"present"`
-	// Error carries why a present control plane could not be read.
+	// Error carries why a present control plane could not be read: the CLI's
+	// own error, or — when the unit is known to be stopped and the CLI was
+	// not asked at all — what to do about it (see NotRunningMessage).
 	Error string `json:"error,omitempty"`
+	// NotRunning reports that the lists were not read because the headscale
+	// unit is not running; Error then says how to start it.
+	NotRunning bool `json:"notRunning,omitempty"`
 	// OIDCInferred reports that user identity looks like it comes from an
 	// external OpenID Connect provider — guessed from a user carrying a
 	// provider, or a node that registered through OIDC. It is the fallback

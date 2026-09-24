@@ -399,7 +399,8 @@ func (a *app) transportIntro(s wireguard.TransportSettings) string {
 		a.state.Headscale.ControlPlane.OIDC.Configured()); warning != "" {
 		lines = append(lines, "WARNING: "+warning)
 	}
-	lines = append(lines, "", "Step 1 of 2 — rewrite "+wireguard.HeadscaleConfigPath+
+	lines = append(lines, "", fmt.Sprintf("Step 1 of %d — rewrite ",
+		1+wireguard.TailSteps(a.state.Headscale.ControlPlane))+wireguard.HeadscaleConfigPath+
 		". Only the lines below change; everything else in the file, comments included, "+
 		"is kept byte for byte.")
 	return strings.Join(lines, "\n")

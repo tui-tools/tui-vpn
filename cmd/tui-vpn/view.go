@@ -300,6 +300,11 @@ func (a *app) emptyMessage() string {
 		if !a.state.Headscale.Present {
 			return "no Headscale control plane on this host"
 		}
+		if a.state.Headscale.NotRunning {
+			// Nothing failed: the CLI was not asked, because the unit is
+			// stopped. The message says how to start it.
+			return a.state.Headscale.Error
+		}
 		if a.state.Headscale.Error != "" {
 			return "could not read Headscale: " + a.state.Headscale.Error
 		}

@@ -182,3 +182,22 @@ func TestCheckReportsAnUnreachableServerURL(t *testing.T) {
 		}
 	}
 }
+
+// TestCheckWithTheUnitStopped: --check reports the stopped unit as the
+// sentence the screens show, not as the CLI's socket error.
+func TestCheckWithTheUnitStopped(t *testing.T) {
+	fake := wireguard.NewFake()
+	fake.SetService("failed", "enabled")
+	var out strings.Builder
+	if err := runCheck(context.Background(), fake, nil, &out); err != nil {
+		t.Fatal(err)
+	}
+	var report checkReport
+	if err := json.Unmarshal([]byte(out.String()), &report); err != nil {
+		t.Fatal(err)
+	}
+	hs := report.Headscale
+	if !hs.NotRunning || !strings.Contains(hs.Error, "headscale has failed") || hs.Users != 0 {
+		t.Errorf("stopped unit in --check: %+v", hs)
+	}
+}

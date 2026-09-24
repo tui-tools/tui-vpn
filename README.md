@@ -40,6 +40,8 @@ tui-vpn --demo
 - **nodes** — the machines registered with Headscale, who owns each, and key expiry. `e` expires one, `m` renames one, `x` deletes one.
 - **preauth keys** — the keys that let a machine register itself, shown by prefix only. `n` creates one, shown exactly once.
 
+**When the headscale unit is not running**, the users, nodes and keys screens do not ask the CLI (it talks to the running server over a socket, so every list would fail) and say what to do instead: `headscale is not running · S configures and starts it` on a fresh install, `systemctl start headscale` when `server_url` is already set up, and `journalctl -u headscale` when the unit has failed. `S`, `O` and `F` keep working, since they only need the configuration file. When the CLI fails for another reason, the screen shows the `error` field of the JSON it printed rather than its first raw line.
+
 ![The peers screen: endpoints, handshake age and transfer for the selected interface](docs/screenshots/tui-vpn-peers.png)
 
 ![The users screen, under the control-plane panel: the unit's state and account, file ownership, server_url, transport, base domain, the OIDC redirect URI, issuer and client id, and that a client secret is set](docs/screenshots/tui-vpn-users.png)
@@ -182,7 +184,7 @@ tui-vpn --check
 
 Reads the interfaces and the control plane once and prints a summary as JSON: interface and peer counts, per-peer handshake ages, whether Headscale is present, user and node counts, and a `compat` block naming each backend's version.
 
-It also carries a `controlPlane` block read from `/etc/headscale/config.yaml`: `serviceState` and `serviceEnabled` (what `systemctl is-active` and `is-enabled` answer for the unit), `serviceAccount`, the ownership check (`ownershipChecked`, `ownershipOk`, `ownershipIssues`), `oidcClientId`, the scope, whether a client secret is set, and the answers below. `oidcConfigured` now comes from that configuration rather than being guessed; the older guess — inferred from users carrying a provider and nodes registered through OIDC — stays as `oidcInferred`, which is the answer used on a host whose `config.yaml` cannot be read.
+It also carries a `controlPlane` block read from `/etc/headscale/config.yaml`: `serviceState` and `serviceEnabled` (what `systemctl is-active` and `is-enabled` answer for the unit), `serviceAccount`, the ownership check (`ownershipChecked`, `ownershipOk`, `ownershipIssues`), `oidcClientId`, the scope, whether a client secret is set, and the answers below. With the unit stopped, `headscale.error` is the same sentence the screens show and `headscale.notRunning` is true. `oidcConfigured` now comes from that configuration rather than being guessed; the older guess — inferred from users carrying a provider and nodes registered through OIDC — stays as `oidcInferred`, which is the answer used on a host whose `config.yaml` cannot be read.
 
 Like `--report`, it carries **no key, no endpoint, no URL and no address of the host** — and the control-plane block is no exception. What an "OIDC does not work" report actually needs is the two ways the setup fails, not the URL that names your server, so:
 

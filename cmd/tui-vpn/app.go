@@ -482,8 +482,7 @@ func (a *app) handleActionKey(key string) tea.Cmd {
 	case wireguard.ScreenUsers:
 		switch key {
 		case "n":
-			if !a.state.Headscale.Present {
-				a.setStatus(ui.StatusWarn, "no control plane")
+			if !a.headscaleAnswers() {
 				return nil
 			}
 			a.input = ui.NewInput("Create user", "name", "")
@@ -530,8 +529,7 @@ func (a *app) handleActionKey(key string) tea.Cmd {
 		}
 	case wireguard.ScreenKeys:
 		if key == "n" {
-			if !a.state.Headscale.Present {
-				a.setStatus(ui.StatusWarn, "no control plane")
+			if !a.headscaleAnswers() {
 				return nil
 			}
 			if len(a.state.Headscale.Users) == 0 {
@@ -549,6 +547,21 @@ func (a *app) handleActionKey(key string) tea.Cmd {
 		}
 	}
 	return nil
+}
+
+// headscaleAnswers reports whether the headscale CLI can take a command, and
+// says why not when it cannot: no control plane, or a unit that is stopped.
+func (a *app) headscaleAnswers() bool {
+	hs := a.state.Headscale
+	switch {
+	case !hs.Present:
+		a.setStatus(ui.StatusWarn, "no control plane")
+		return false
+	case hs.NotRunning:
+		a.setStatus(ui.StatusWarn, hs.Error)
+		return false
+	}
+	return true
 }
 
 // startCreateInterface opens the first step of the create-interface wizard.
