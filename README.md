@@ -36,7 +36,7 @@ tui-vpn --demo
 
 - **interfaces** — the WireGuard interfaces on this host, with peer counts and state. `N` creates one from zero, `u` / `d` bring one up or down, `w` saves its runtime config.
 - **peers** — the peers of the selected interface: endpoint, handshake age, transfer, allowed-ips, keepalive. `a` / `x` add or remove a peer (end the add line with `psk` to also generate a pre-shared key file); `w` saves.
-- **users** — the Headscale users, and the provider they authenticate against, under a panel showing what `/etc/headscale/config.yaml` says: `server_url`, `listen_addr`, the OIDC issuer and client id, whether a client secret is set, the allow lists, and the state of the `headscale` unit: active or not, enabled at boot or not, and the account it runs as. `n` creates a user; `S` and `O` configure the control plane.
+- **users** — the Headscale users, and the provider they authenticate against, under a panel showing what `/etc/headscale/config.yaml` says: `server_url`, `listen_addr`, the OIDC issuer and client id, whether a client secret is set, the allow lists, and the state of the `headscale` unit: active or not, enabled at boot or not, the account it runs as, and whether that account owns its state files. `n` creates a user; `S` and `O` configure the control plane; `F` fixes the ownership of headscale's files.
 - **nodes** — the machines registered with Headscale, who owns each, and key expiry. `e` expires one, `m` renames one, `x` deletes one.
 - **preauth keys** — the keys that let a machine register itself, shown by prefix only. `n` creates one, shown exactly once.
 
@@ -118,7 +118,29 @@ A secret found sitting *inline* in `config.yaml` — someone else's setup, or an
 
 **Then a restart.** A configuration change does nothing until the unit that reads it restarts, so the flow ends with `systemctl restart headscale` as its own confirm, or with the enable a disabled unit needs (see [the last step](#the-last-step-restart-or-enable)). Esc there leaves the file written and the running server on the old settings.
 
-**The secret file is owned by the service, not by root.** tui-vpn reads `systemctl show headscale -p User -p Group` and hands the file to that account in the same previewed `install`, so there is no second step and no window in which the ownership is wrong. It matters because the packages disagree: the `.deb`'s unit runs headscale as root, while the Arch package runs it as its own `headscale` user — and a root-only secret file would leave that service unable to read its own credential and unable to come back from the restart at the end of the flow. A unit that names no user gets `root:root`, which is what systemd would have used anyway. The mode stays `600` in every case: the owner is what changes, so the file is readable by exactly one account either way. The panel shows which account that is, next to the unit's state.
+**The secret file is owned by the service, not by root.** tui-vpn reads `systemctl show headscale -p User -p Group` and hands the file to that account in the same previewed `install`, so there is no second step and no window in which the ownership is wrong. It matters because units disagree: headscale's own `.deb` (0.29.3, checked on a real Ubuntu 24.04 host) and the Arch package run it as a dedicated `headscale` user, while a hand-written or older unit may run it as root — and a root-only secret file would leave a `headscale`-user service unable to read its own credential and unable to come back from the restart at the end of the flow. A unit that names no user gets `root:root`, which is what systemd would have used anyway. The mode stays `600` in every case: the owner is what changes, so the file is readable by exactly one account either way. The panel shows which account that is, next to the unit's state.
+
+### State ownership (`F` on the users screen)
+
+A common way to break a fresh control plane without noticing: run `sudo headscale configtest` (or any `headscale` subcommand) as root before the first start. That creates the noise private key and the SQLite database owned by `root`, while the packaged unit runs as `User=headscale`, and the service then fails at the restart that ends `S` or `O` with nothing pointing at the cause. systemd's `StateDirectory=` does not help: it fixes the owner of `/var/lib/headscale` itself, not of the files already inside it.
+
+So the panel checks. It reads the unit's `User`/`Group` (the same read the secret file uses) and `stat`s:
+
+| Path | Should belong to |
+| --- | --- |
+| `/var/lib/headscale`, and the directories under it that hold the files below | the account the unit runs as |
+| `noise.private_key_path` (and a pre-0.23 top-level `private_key_path`) | the account the unit runs as |
+| `database.sqlite.path`, with its `-wal` and `-shm` files (not checked for postgres) | the account the unit runs as |
+| `/etc/headscale/oidc_client_secret`, which `O` writes | the account the unit runs as |
+| `/etc/headscale/config.yaml.bak`, which every write takes | whoever owns `config.yaml`: it holds the same content, so no more and no less readable |
+
+A path that does not exist yet is not a problem, and a unit that runs as root is never short of access, so only the backup is compared there. A mismatch shows next to the service state (`ownership ⚠ /var/lib/headscale/noise_private.key is root:root, want headscale:headscale — F fixes it`), and `F` previews the fix, one confirm per command:
+
+- every mismatch inside `/var/lib/headscale` is covered by **one** `chown -R <user>:<group> /var/lib/headscale`, because a root-run headscale leaves more behind than the files the check names, and the whole directory belongs to the service anyway;
+- a state file `config.yaml` puts anywhere else gets its own `chown <user>:<group> <file>`, never a recursive one: a database at `/srv/db.sqlite` must not turn into a `chown -R` of `/srv`;
+- the secret file and the backup get a plain `chown` each.
+
+The chain ends with the same restart (or enable) step as `S` and `O`, since a service that failed on these files needs one. `--check` reports the result as `ownershipChecked`, `ownershipOk` and `ownershipIssues` (path, role, current and wanted owner); an ownership that could not be read is reported as unchecked, never as fine.
 
 ### Node rename and delete (`m` / `x`)
 
@@ -142,7 +164,7 @@ tui-vpn --check
 
 Reads the interfaces and the control plane once and prints a summary as JSON: interface and peer counts, per-peer handshake ages, whether Headscale is present, user and node counts, and a `compat` block naming each backend's version.
 
-It also carries a `controlPlane` block read from `/etc/headscale/config.yaml`: `serviceState` and `serviceEnabled` (what `systemctl is-active` and `is-enabled` answer for the unit), `oidcClientId`, the scope, whether a client secret is set, and the answers below. `oidcConfigured` now comes from that configuration rather than being guessed; the older guess — inferred from users carrying a provider and nodes registered through OIDC — stays as `oidcInferred`, which is the answer used on a host whose `config.yaml` cannot be read.
+It also carries a `controlPlane` block read from `/etc/headscale/config.yaml`: `serviceState` and `serviceEnabled` (what `systemctl is-active` and `is-enabled` answer for the unit), `serviceAccount`, the ownership check (`ownershipChecked`, `ownershipOk`, `ownershipIssues`), `oidcClientId`, the scope, whether a client secret is set, and the answers below. `oidcConfigured` now comes from that configuration rather than being guessed; the older guess — inferred from users carrying a provider and nodes registered through OIDC — stays as `oidcInferred`, which is the answer used on a host whose `config.yaml` cannot be read.
 
 Like `--report`, it carries **no key, no endpoint, no URL and no address of the host** — and the control-plane block is no exception. What an "OIDC does not work" report actually needs is the two ways the setup fails, not the URL that names your server, so:
 

@@ -60,6 +60,16 @@ func TestRunCheckPrintsOneReadOfEverything(t *testing.T) {
 	if got := report.Headscale.ControlPlane.ServiceEnabled; got != "disabled" {
 		t.Errorf("serviceEnabled = %q, want disabled", got)
 	}
+	// The demo's noise key is root's, which --check names by path.
+	cps := report.Headscale.ControlPlane
+	if !cps.OwnershipChecked || cps.OwnershipOK || len(cps.OwnershipIssues) != 1 ||
+		cps.OwnershipIssues[0].Path != "/var/lib/headscale/noise_private.key" {
+		t.Errorf("ownership = %v %v %+v", cps.OwnershipChecked, cps.OwnershipOK,
+			cps.OwnershipIssues)
+	}
+	if cps.ServiceAccount != "headscale:headscale" {
+		t.Errorf("serviceAccount = %q", cps.ServiceAccount)
+	}
 	if report.Headscale.NodesExpired != 1 {
 		t.Errorf("nodesExpired = %d, want 1 (the demo has one expired node)", report.Headscale.NodesExpired)
 	}

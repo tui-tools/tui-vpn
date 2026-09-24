@@ -112,6 +112,9 @@ func (a *app) controlPlanePanel() []string {
 	if a.serverURLWarning(cp.ServerURL) != "" {
 		server += "   ⚠"
 	}
+	if own := ownershipLine(cp); own != "" {
+		lines = append(lines, own)
+	}
 	return append(lines,
 		server,
 		"  oidc        issuer "+orDash(oidc.Issuer)+
@@ -123,6 +126,25 @@ func (a *app) controlPlanePanel() []string {
 			" · pkce "+onOff(oidc.PKCE)+
 			" · only_start_if_oidc_is_available "+yesNo(oidc.OnlyStartIfAvailable),
 	)
+}
+
+// ownershipLine says whether headscale can read its own files. A mismatch is
+// named by its first path, because the first one is usually the whole story
+// (a root-run `headscale` created the key and the database together).
+func ownershipLine(cp wireguard.ControlPlane) string {
+	own := cp.Ownership
+	switch {
+	case !own.Checked:
+		return ""
+	case own.OK():
+		return "  ownership   state, secret and backup owned as expected"
+	}
+	first := own.Issues[0]
+	line := "  ownership   ⚠ " + first.Path + " is " + first.Owner + ", want " + first.Want
+	if more := len(own.Issues) - 1; more > 0 {
+		line += fmt.Sprintf(" (+%d more)", more)
+	}
+	return line + " — F fixes it"
 }
 
 // serviceLine is the state of the unit that reads the configuration: whether
@@ -588,7 +610,8 @@ func (a *app) shortHelpKeys() []ui.KeyHint {
 			ui.KeyHint{Key: "w", Desc: "save"})
 	case wireguard.ScreenUsers:
 		hints = append(hints, ui.KeyHint{Key: "n", Desc: "new user"},
-			ui.KeyHint{Key: "S", Desc: "server"}, ui.KeyHint{Key: "O", Desc: "oidc"})
+			ui.KeyHint{Key: "S", Desc: "server"}, ui.KeyHint{Key: "O", Desc: "oidc"},
+			ui.KeyHint{Key: "F", Desc: "fix owner"})
 	case wireguard.ScreenNodes:
 		hints = append(hints,
 			ui.KeyHint{Key: "e", Desc: "expire"}, ui.KeyHint{Key: "m", Desc: "rename"},
@@ -625,6 +648,8 @@ func helpKeys() []ui.KeyHint {
 		{Key: "", Desc: "enable, when the unit is disabled)"},
 		{Key: "O", Desc: "identity provider (users): issuer, client id, secret,"},
 		{Key: "", Desc: "allow lists, scope, pkce — then a restart"},
+		{Key: "F", Desc: "fix ownership (users): chown headscale's state files, and"},
+		{Key: "", Desc: "the secret and backup this tool writes, to who needs them"},
 		{Key: "", Desc: ""},
 		{Key: "identity", Desc: "login is OIDC in the client's browser against your IdP;"},
 		{Key: "", Desc: "the Headscale server exposes no web admin, by design."},

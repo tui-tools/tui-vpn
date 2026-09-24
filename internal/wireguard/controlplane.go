@@ -82,6 +82,16 @@ type ControlPlane struct {
 	// would leave the service unable to start.
 	ServiceUser  string `json:"serviceUser,omitempty"`
 	ServiceGroup string `json:"serviceGroup,omitempty"`
+	// NoisePrivateKeyPath, LegacyPrivateKeyPath and DatabasePath are the state
+	// files config.yaml names: headscale creates them on its first run, owned
+	// by whoever ran it, and needs to read (and, for the database, write) them
+	// as the account the unit runs as.
+	NoisePrivateKeyPath  string `json:"noisePrivateKeyPath,omitempty"`
+	LegacyPrivateKeyPath string `json:"legacyPrivateKeyPath,omitempty"`
+	DatabasePath         string `json:"databasePath,omitempty"`
+	// Ownership is whether those files, and the ones this tool writes, belong
+	// to the account that has to read them. See ownership.go.
+	Ownership Ownership `json:"ownership"`
 	// OIDC is the identity-provider section.
 	OIDC OIDCConfig `json:"oidc"`
 	// Raw is the file byte for byte, kept so an edit can be a minimal splice
@@ -125,7 +135,19 @@ func (o OIDCConfig) Configured() bool { return o.Issuer != "" && o.ClientID != "
 type headscaleConfigDoc struct {
 	ServerURL  string `yaml:"server_url"`
 	ListenAddr string `yaml:"listen_addr"`
-	DNS        struct {
+	// PrivateKeyPath is the pre-0.23 top-level key path; newer files only
+	// have noise.private_key_path.
+	PrivateKeyPath string `yaml:"private_key_path"`
+	Noise          struct {
+		PrivateKeyPath string `yaml:"private_key_path"`
+	} `yaml:"noise"`
+	Database struct {
+		Type   string `yaml:"type"`
+		Sqlite struct {
+			Path string `yaml:"path"`
+		} `yaml:"sqlite"`
+	} `yaml:"database"`
+	DNS struct {
 		BaseDomain string `yaml:"base_domain"`
 	} `yaml:"dns"`
 	OIDC struct {
@@ -196,6 +218,15 @@ func ParseHeadscaleConfig(data []byte) (ControlPlane, error) {
 		ListenAddr: strings.TrimSpace(doc.ListenAddr),
 		BaseDomain: strings.TrimSpace(doc.DNS.BaseDomain),
 		Raw:        string(data),
+
+		NoisePrivateKeyPath:  strings.TrimSpace(doc.Noise.PrivateKeyPath),
+		LegacyPrivateKeyPath: strings.TrimSpace(doc.PrivateKeyPath),
+	}
+	// Only SQLite keeps its data in a file on this machine; postgres is some
+	// other server's business.
+	switch strings.ToLower(strings.TrimSpace(doc.Database.Type)) {
+	case "", "sqlite", "sqlite3":
+		cp.DatabasePath = strings.TrimSpace(doc.Database.Sqlite.Path)
 	}
 	o := doc.OIDC
 	cp.OIDC = OIDCConfig{
@@ -846,10 +877,10 @@ func BuildWriteHeadscaleConfig(content string) (runner.Command, error) {
 // readable by anyone it should not be — and no second previewed step either.
 //
 // The owner is the account the headscale unit actually runs as, read from the
-// unit rather than assumed. A root-only file works on the deb, whose unit runs
-// as root, and breaks the Arch package, whose unit runs headscale as its own
-// user: the service would come back from the restart unable to read its own
-// secret. Mode stays 600 in both cases, so the file is readable by exactly one
+// unit rather than assumed. A root-only file works for a unit that runs as
+// root, and breaks the packaged ones (headscale's own .deb, the Arch
+// package), which run headscale as its own user: the service would come back
+// from the restart unable to read its own secret. Mode stays 600 in both cases, so the file is readable by exactly one
 // account and no other.
 func BuildWriteOIDCClientSecret(secret, user, group string) (runner.Command, error) {
 	if !ValidClientSecret(secret) {

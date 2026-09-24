@@ -480,6 +480,8 @@ func (a *app) handleActionKey(key string) tea.Cmd {
 			return a.startServerSettings()
 		case "O":
 			return a.startOIDCSettings()
+		case "F":
+			return a.startFixOwnership()
 		}
 	case wireguard.ScreenNodes:
 		switch key {

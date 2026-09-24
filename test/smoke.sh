@@ -141,6 +141,32 @@ if command -v headscale >/dev/null 2>&1; then
     "\"serviceEnabled\": \"${enabled:-unknown}\""
 fi
 
+# The ownership check: the demo's noise key is root's, the way a root-run
+# `headscale configtest` leaves it, and --check names the path.
+check "check --demo names a state file the service account does not own" \
+  "$bin --demo --check" \
+  '"path": "/var/lib/headscale/noise_private.key"'
+
+# On a machine with headscale, the check has to have run (stat reached the
+# state directory through sudo -n) and agree with stat about the directory.
+if command -v headscale >/dev/null 2>&1; then
+  check "check ran the ownership check on the real state directory" \
+    "sudo -n $bin --check" \
+    '"ownershipChecked": true'
+
+  owner=$(sudo -n stat -c %U:%G /var/lib/headscale 2>/dev/null)
+  account=$(systemctl show headscale -p User --value 2>/dev/null)
+  if [[ -n $owner && -n $account && ${owner%%:*} != "$account" ]]; then
+    check "check reports the state directory owned by the wrong account" \
+      "sudo -n $bin --check" \
+      '"path": "/var/lib/headscale"'
+  elif [[ -n $owner ]]; then
+    check "check does not flag a state directory the service owns" \
+      "sudo -n $bin --check | grep -c '\"path\": \"/var/lib/headscale\"' || true" \
+      '^0$'
+  fi
+fi
+
 check "check --demo keeps the inference as a separate field" \
   "$bin --demo --check" \
   '"oidcInferred":'

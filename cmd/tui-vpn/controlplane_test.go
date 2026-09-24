@@ -495,3 +495,94 @@ func TestPanelSaysWhetherTheUnitStartsAtBoot(t *testing.T) {
 		t.Errorf("a disabled unit is not called out:\n%s", view)
 	}
 }
+
+// TestFixOwnershipFlow drives F on the demo, whose noise key is root's: the
+// panel names the file, F previews one recursive chown of the state
+// directory, and the restart tail follows it.
+func TestFixOwnershipFlow(t *testing.T) {
+	a := newTestApp(t)
+	a.setScreen(wireguard.ScreenUsers)
+	view := a.View()
+	if !strings.Contains(view, "/var/lib/headscale/noise_private.key is root:root") {
+		t.Errorf("the panel does not name the mismatch:\n%s", view)
+	}
+
+	model, _ := a.Update(key("F"))
+	a = model.(*app)
+	if a.mode != modeConfirm {
+		t.Fatalf("F did not open a confirm (mode %d)", a.mode)
+	}
+	if a.confirm.Command != "chown -R headscale:headscale /var/lib/headscale" {
+		t.Errorf("preview = %q", a.confirm.Command)
+	}
+	if !strings.Contains(a.confirm.Body, "root:root → headscale:headscale") {
+		t.Errorf("the dialog does not say what it fixes:\n%s", a.confirm.Body)
+	}
+	a = confirmAndRun(t, a)
+
+	// The restart tail: the demo unit is running but disabled.
+	if a.mode != modeConfirm || a.confirm.Command != "systemctl enable headscale" {
+		t.Fatalf("the fix did not chain the enable: mode %d, %q", a.mode, a.confirm.Command)
+	}
+	model, _ = a.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	a = model.(*app)
+
+	state, _ := a.backend.Load(t.Context())
+	a.state = state
+	if !state.Headscale.ControlPlane.Ownership.OK() {
+		t.Errorf("ownership after the fix = %+v", state.Headscale.ControlPlane.Ownership)
+	}
+	if !strings.Contains(a.View(), "owned as expected") {
+		t.Errorf("the panel does not say the ownership is fine now:\n%s", a.View())
+	}
+
+	// F with nothing to fix says so and opens nothing.
+	model, _ = a.Update(key("F"))
+	a = model.(*app)
+	if a.mode != modeBrowse || !strings.Contains(a.status, "nothing to fix") {
+		t.Errorf("F on a clean host: mode %d, status %q", a.mode, a.status)
+	}
+}
+
+// TestFixOwnershipChainsEveryFile: the secret and the backup get their own
+// non-recursive chowns after the state directory's, one confirm each.
+func TestFixOwnershipChainsEveryFile(t *testing.T) {
+	fake := wireguard.NewFake()
+	fake.SetStat(wireguard.FileStat{Path: wireguard.OIDCClientSecretPath,
+		User: "root", Group: "root", Mode: 0o600})
+	fake.SetService("active", "enabled")
+	a := newApp(fake, theme.New(), nil)
+	a.width, a.height = 100, 30
+	a.state, _ = fake.Load(t.Context())
+	a.loading = false
+	a.setScreen(wireguard.ScreenUsers)
+
+	model, _ := a.Update(key("F"))
+	a = model.(*app)
+	for i, want := range []string{
+		"chown headscale:headscale " + wireguard.OIDCClientSecretPath,
+		"chown -R headscale:headscale /var/lib/headscale",
+		"systemctl restart headscale",
+	} {
+		if a.mode != modeConfirm || a.confirm.Command != want {
+			t.Fatalf("step %d: mode %d, preview %q, want %q", i, a.mode, a.confirm.Command, want)
+		}
+		a = confirmAndRun(t, a)
+	}
+}
+
+// TestFixOwnershipNeedsACheck: an ownership that could not be read is not a
+// clean one, and F says why it has nothing to offer.
+func TestFixOwnershipNeedsACheck(t *testing.T) {
+	a := newTestApp(t)
+	a.setScreen(wireguard.ScreenUsers)
+	a.state.Headscale.ControlPlane.Ownership = wireguard.Ownership{}
+	model, _ := a.Update(key("F"))
+	a = model.(*app)
+	if a.mode != modeBrowse || !strings.Contains(a.status, "not checked") {
+		t.Errorf("mode %d, status %q", a.mode, a.status)
+	}
+	if strings.Contains(a.View(), "ownership   ") {
+		t.Error("the panel reports an ownership it never checked")
+	}
+}

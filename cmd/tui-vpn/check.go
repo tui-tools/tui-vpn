@@ -100,6 +100,16 @@ type cpSummary struct {
 	// ServiceEnabled is `systemctl is-enabled headscale`: "disabled" is the
 	// fresh-install state that loses the control plane at the next reboot.
 	ServiceEnabled string `json:"serviceEnabled,omitempty"`
+	// ServiceAccount is who the unit runs as, user:group.
+	ServiceAccount string `json:"serviceAccount,omitempty"`
+	// OwnershipChecked and OwnershipOK answer whether headscale can read its
+	// own state and the files this tool writes for it; OwnershipIssues names
+	// each path that is owned by the wrong account. The paths are the
+	// packaged defaults or what config.yaml names for headscale's state, not
+	// anything that locates this host.
+	OwnershipChecked bool                       `json:"ownershipChecked"`
+	OwnershipOK      bool                       `json:"ownershipOk"`
+	OwnershipIssues  []wireguard.OwnershipIssue `json:"ownershipIssues,omitempty"`
 	// ServerURLSet reports that a server_url is configured at all.
 	ServerURLSet bool `json:"serverUrlSet"`
 	// ServerURLHTTPS and ServerURLLoopback are what the URL itself is not
@@ -203,6 +213,10 @@ func summariseHS(hs wireguard.Headscale) hsSummary {
 			Error:                  cp.Error,
 			ServiceState:           cp.ServiceState,
 			ServiceEnabled:         cp.ServiceEnabled,
+			ServiceAccount:         serviceAccountOf(cp),
+			OwnershipChecked:       cp.Ownership.Checked,
+			OwnershipOK:            cp.Ownership.OK(),
+			OwnershipIssues:        cp.Ownership.Issues,
 			ServerURLSet:           cp.ServerURL != "",
 			ServerURLHTTPS:         wireguard.ServerURLIsHTTPS(cp.ServerURL),
 			ServerURLLoopback:      wireguard.IsLoopbackHost(wireguard.URLHost(cp.ServerURL)),
@@ -242,4 +256,13 @@ func handshakeAge(now, t time.Time) int {
 		return -1
 	}
 	return int(now.Sub(t).Seconds())
+}
+
+// serviceAccountOf is the unit's account for --check, empty when it was not
+// read (an unreadable configuration never gets that far).
+func serviceAccountOf(cp wireguard.ControlPlane) string {
+	if cp.ServiceUser == "" {
+		return ""
+	}
+	return serviceAccount(cp)
 }

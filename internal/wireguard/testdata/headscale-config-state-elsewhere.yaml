@@ -1,0 +1,20 @@
+# A constructed headscale configuration whose state lives outside the packaged
+# state directory, written the way a pre-0.23 file still does it: the machine
+# key at the top level, next to the noise key. Every host is a documentation
+# name.
+server_url: https://vpn.example.com
+listen_addr: 0.0.0.0:8080
+
+private_key_path: /srv/headscale/private.key
+
+noise:
+  private_key_path: /srv/headscale/noise_private.key
+
+database:
+  type: sqlite3
+  sqlite:
+    path: /srv/headscale/db.sqlite
+
+dns:
+  magic_dns: true
+  base_domain: tailnet.example.net

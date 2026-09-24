@@ -12,6 +12,8 @@ came from:
 | `headscale-nodes.json` | **Constructed** from `headscale nodes list --output json`. Three nodes: one online, one offline, one already expired; two registered via OIDC, one via a pre-auth key. |
 | `headscale-preauthkeys.json` | **Constructed** from `headscale preauthkeys list --output json`. One reusable key. |
 | `headscale-config.yaml` | **Captured**, unmodified, from the `/etc/headscale/config.yaml` that headscale v0.29.3 ships in its own `.deb` (downloaded from the family mirror `tui-tools/headscale`, sha256 checked against the release `checksums.txt` and the release attestation verified). It is upstream's file, so it names nothing of this host. It is the fixture the control-plane editor is judged on: 494 lines, almost all comments, with the whole `oidc:` section commented out — the case where the section has to be created rather than spliced. |
+| `headscale-config-state-elsewhere.yaml` | **Constructed.** State outside `/var/lib/headscale`, with a pre-0.23 top-level `private_key_path` next to the noise key: the case where the ownership fix must chown file by file and never recurse from a directory headscale does not own. |
+| `headscale-config-postgres.yaml` | **Constructed.** A postgres database, so the only state file on this machine is the noise key. |
 
 Headscale is not installed on this machine, so the three list fixtures are
 constructed rather than captured. The first lab host with a real Headscale and
