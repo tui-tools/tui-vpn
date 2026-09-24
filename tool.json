@@ -99,6 +99,9 @@
       "searchPaths": [
         "/usr/bin/wg",
         "/bin/wg"
+      ],
+      "tested": [
+        "1.0.20210914"
       ]
     },
     {
@@ -119,6 +122,9 @@
           "range": "<0.23",
           "impact": "`preauthkeys list` requires a `--user`, so the pre-auth keys screen may be empty; users and nodes are unaffected"
         }
+      ],
+      "tested": [
+        "0.29.3"
       ]
     }
   ],

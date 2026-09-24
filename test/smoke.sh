@@ -198,5 +198,41 @@ check "check --demo has no field that could hold a secret" \
   "$bin --demo --check | grep -icE '\"(oidc)?[a-z]*clientsecret\": \"' || true" \
   '^0$'
 
+# --- compatibility evidence ------------------------------------------------
+#
+# record_compat turns this run into the evidence `tested` is generated from:
+# one line per backend whose version the tool itself probed, printed behind
+# `compat-result:` so it survives the trip out of the guest in the lab's log,
+# and appended to $TUI_COMPAT_RESULTS as well for a run outside the lab.
+# tui-vpn drives two backends, so --check's compat block is a list: each
+# entry names a backend and, when the probe could read one, its version.
+TOOL=tui-vpn
+record_compat() {
+  local report="$1" outcome="$2" distro today backend version line
+  distro=$(. /etc/os-release && echo "${ID}-${VERSION_ID:-rolling}")
+  today=$(date -u +%Y-%m-%d)
+  local recorded=0
+  while IFS=$'\t' read -r backend version; do
+    [[ -n $backend && -n $version ]] || continue
+    line=$(printf '{"backend":"%s","date":"%s","distro":"%s","result":"%s","suite":"smoke","tool":"%s","version":"%s"}' \
+      "$backend" "$today" "$distro" "$outcome" "$TOOL" "$version")
+    printf 'compat-result: %s\n' "$line"
+    if [[ -n ${TUI_COMPAT_RESULTS:-} ]]; then
+      printf '%s\n' "$line" >>"$TUI_COMPAT_RESULTS"
+    fi
+    recorded=$((recorded + 1))
+  done < <(sed -n '/"compat": \[/,/^  \]/p' <<<"$report" | awk '
+    /"backend":/ { if (b != "") print b "\t" v; gsub(/.*"backend": "|".*/, ""); b = $0; v = "" }
+    /"version":/ { gsub(/.*"version": "|".*/, ""); v = $0 }
+    END { if (b != "") print b "\t" v }')
+  if [[ $recorded -eq 0 ]]; then
+    echo "      no version was probed, so no compatibility result is recorded"
+  fi
+}
+
+outcome=pass
+[[ $fail -eq 0 ]] || outcome=fail
+record_compat "$(sudo -n "$bin" --check 2>/dev/null)" "$outcome"
+
 echo "--- tui-vpn: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]
