@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/tui-tools/tui-kit/runner"
 	"github.com/tui-tools/tui-kit/ui"
 	"github.com/tui-tools/tui-vpn/internal/wireguard"
 )
@@ -26,7 +28,12 @@ import (
 
 // controlPlaneDraft collects the answers of the two control-plane forms.
 type controlPlaneDraft struct {
+	// The server-settings form: the transport, and what it needs.
+	transport             wireguard.Transport
 	serverURL, listenAddr string
+	challenge, acmeEmail  string
+	certPath, keyPath     string
+	baseDomain            string
 
 	issuer, clientID              string
 	domains, groups, users, scope []string
@@ -54,7 +61,8 @@ func (d *controlPlaneDraft) forgetSecret() {
 // operator means to say.
 func acceptsEmpty(purpose inputPurpose) bool {
 	switch purpose {
-	case inputOIDCDomains, inputOIDCGroups, inputOIDCUsers, inputOIDCSecret:
+	case inputOIDCDomains, inputOIDCGroups, inputOIDCUsers, inputOIDCSecret,
+		inputACMEEmail, inputBaseDomain:
 		return true
 	}
 	return false
@@ -69,67 +77,7 @@ type discoveredMsg struct {
 	detail string
 }
 
-// --- the server-settings form (S) -------------------------------------------
-
-// startServerSettings opens the first step of the server-settings form.
-func (a *app) startServerSettings() tea.Cmd {
-	if !a.controlPlaneEditable() {
-		return nil
-	}
-	cp := a.state.Headscale.ControlPlane
-	a.cpDraft = controlPlaneDraft{}
-	a.openInput(inputServerURL, "Server settings — server_url",
-		"https://vpn.example.com", cp.ServerURL,
-		"The base URL clients reach this control plane on, and the URL the IdP will "+
-			"redirect a browser back to. It has to be https and it has to resolve from "+
-			"the clients' own networks: tui-cert issues the certificate, tui-firewall "+
-			"opens the port.")
-	return nil
-}
-
-// tookServerURL validates step 1 and opens step 2.
-func (a *app) tookServerURL(value string) tea.Cmd {
-	if !wireguard.ValidServerURL(value) {
-		a.setStatusf(ui.StatusError, "not a valid server_url: %q", value)
-		return nil
-	}
-	a.cpDraft.serverURL = value
-	if warning := a.serverURLWarning(value); warning != "" {
-		a.setStatus(ui.StatusWarn, warning)
-	}
-	listen := a.state.Headscale.ControlPlane.ListenAddr
-	if listen == "" {
-		listen = "0.0.0.0:8080"
-	}
-	a.openInput(inputListenAddr, "Server settings — listen_addr",
-		"0.0.0.0:8080", listen,
-		"The address headscale binds. Bind it to a loopback or an internal address when "+
-			"a reverse proxy terminates TLS in front of it, and to 0.0.0.0 when it does not.")
-	return nil
-}
-
-// tookListenAddr validates step 2 and opens the confirm chain.
-func (a *app) tookListenAddr(value string) tea.Cmd {
-	if !wireguard.ValidListenAddr(value) {
-		a.setStatusf(ui.StatusError, "not a valid listen_addr: %q", value)
-		return nil
-	}
-	a.cpDraft.listenAddr = value
-
-	settings := wireguard.ServerSettings{
-		ServerURL: a.cpDraft.serverURL, ListenAddr: a.cpDraft.listenAddr}
-	edits, err := settings.Edits()
-	if err != nil {
-		a.setStatus(ui.StatusError, err.Error())
-		return nil
-	}
-	intro := "Step 1 of 2 — rewrite " + wireguard.HeadscaleConfigPath + ". Only the lines " +
-		"below change; everything else in the file, comments included, is kept byte for byte."
-	if warning := a.serverURLWarning(a.cpDraft.serverURL); warning != "" {
-		intro = "WARNING: " + warning + "\n\n" + intro
-	}
-	return a.confirmConfigWrite(intro, edits)
-}
+// The server-settings form (S) lives in transport.go.
 
 // --- the OIDC form (O) ------------------------------------------------------
 
@@ -365,6 +313,71 @@ func serviceAccount(cp wireguard.ControlPlane) string {
 // writing one, which the remaining steps still need.
 func (d *controlPlaneDraft) forgetSecretValue() { d.clientSecret = "" }
 
+// --- the ownership fix (F) --------------------------------------------------
+
+// startFixOwnership opens the chain of chowns that gives headscale's state,
+// and the files this tool writes for it, back to the accounts that should own
+// them, then offers the restart a service that failed on them needs.
+func (a *app) startFixOwnership() tea.Cmd {
+	if !a.controlPlaneEditable() {
+		return nil
+	}
+	own := a.state.Headscale.ControlPlane.Ownership
+	switch {
+	case !own.Checked:
+		a.setStatus(ui.StatusWarn, "ownership was not checked: stat could not read the "+
+			"state paths (is sudo -n allowed?)")
+		return nil
+	case own.OK():
+		a.setStatus(ui.StatusOK, "ownership is fine: nothing to fix")
+		return nil
+	}
+	cmds, err := wireguard.BuildFixOwnership(own.Issues)
+	if err != nil {
+		a.setStatus(ui.StatusError, err.Error())
+		return nil
+	}
+	return a.confirmFixStep(own.Issues, cmds, 0)
+}
+
+// confirmFixStep opens one chown of the chain, and chains the next one — or,
+// after the last, the restart — behind it.
+func (a *app) confirmFixStep(issues []wireguard.OwnershipIssue, cmds []runner.Command, i int) tea.Cmd {
+	body := fmt.Sprintf("Step %d of %d — ", i+1, len(cmds))
+	if i == 0 {
+		body = ownershipSummary(issues) + "\n\n" + body
+	}
+	switch {
+	case len(cmds[i].Argv) > 1 && cmds[i].Argv[1] == "-R":
+		body += "give the whole state directory back to the account headscale runs as. " +
+			"A root-run headscale leaves more behind than the files named above (its " +
+			"write-ahead log, caches), and everything in there belongs to the service."
+	default:
+		body += "give this one file to the account that has to read it. It is not " +
+			"recursive: nothing else changes owner."
+	}
+	cmd := a.openConfirmWith(body, cmds[i], nil)
+	if a.mode == modeConfirm {
+		if i+1 < len(cmds) {
+			a.after = func(string) tea.Cmd { return a.confirmFixStep(issues, cmds, i+1) }
+		} else {
+			a.after = func(string) tea.Cmd { return a.confirmRestartHeadscale() }
+		}
+	}
+	return cmd
+}
+
+// ownershipSummary lists what the check found, for the first dialog of the
+// chain: the reader confirms a chown knowing which files it is for.
+func ownershipSummary(issues []wireguard.OwnershipIssue) string {
+	lines := []string{"Not owned by the account that needs them:"}
+	for _, issue := range issues {
+		lines = append(lines, "  "+issue.Path+"  "+issue.Owner+" → "+issue.Want+
+			"  ("+string(issue.Role)+")")
+	}
+	return strings.Join(lines, "\n")
+}
+
 // --- the shared write-and-restart tail --------------------------------------
 
 // confirmConfigWrite computes the edited configuration, shows the minimal diff
@@ -399,11 +412,45 @@ func (a *app) confirmConfigWrite(intro string, edits []wireguard.ConfigEdit) tea
 // confirmRestartHeadscale is the last step: a configuration change does
 // nothing until the unit that reads it restarts. It is optional — esc leaves
 // the file written and the running server on the old configuration.
+//
+// A disabled unit gets more than a restart. A fresh package install leaves
+// headscale disabled, so a restart alone brings the control plane up now and
+// loses it at the next reboot. A disabled unit that is not running is enabled
+// and started in one step (`systemctl enable --now`); one that is running is
+// enabled and then restarted, because `enable --now` leaves a running unit
+// alone and the new configuration would never be read.
 func (a *app) confirmRestartHeadscale() tea.Cmd {
 	a.cpDraft.forgetSecret()
+	cp := a.state.Headscale.ControlPlane
+	if !wireguard.ServiceNeedsEnable(cp.ServiceEnabled) {
+		return a.confirmPlainRestart("Last step")
+	}
+	if cp.ServiceState != "active" {
+		enable, err := wireguard.BuildEnableHeadscale(true)
+		return a.openConfirmWith(
+			"Last step — the headscale unit is disabled and "+orDash(cp.ServiceState)+
+				", so it is enabled and started in one go: a plain restart would bring "+
+				"the control plane up now and lose it at the next reboot. Esc leaves the "+
+				"file written and the unit as it is.",
+			enable, err)
+	}
+	enable, err := wireguard.BuildEnableHeadscale(false)
+	cmd := a.openConfirmWith(
+		"Next step — the headscale unit is running but disabled: it would not come back "+
+			"after a reboot. This enables it at boot; the restart that reads the new "+
+			"configuration follows as its own step. Esc skips both.",
+		enable, err)
+	if a.mode == modeConfirm {
+		a.after = func(string) tea.Cmd { return a.confirmPlainRestart("Last step") }
+	}
+	return cmd
+}
+
+// confirmPlainRestart opens the restart itself.
+func (a *app) confirmPlainRestart(step string) tea.Cmd {
 	restart, err := wireguard.BuildRestartHeadscale()
 	return a.openConfirmWith(
-		"Last step — restart headscale so it reads the new configuration. Every node "+
+		step+" — restart headscale so it reads the new configuration. Every node "+
 			"loses its control connection for as long as the restart takes; established "+
 			"tunnels keep carrying traffic. Esc leaves the file written and the running "+
 			"server on the old settings.",
@@ -418,7 +465,8 @@ func (a *app) confirmRestartHeadscale() tea.Cmd {
 // start with at all.
 func (a *app) serverURLWarning(url string) string {
 	warnings := []string{}
-	if w := wireguard.ServerURLWarning(url); w != "" {
+	if w := wireguard.ServerURLWarning(url,
+		a.state.Headscale.ControlPlane.OIDC.Configured()); w != "" {
 		warnings = append(warnings, w)
 	}
 	if w := wireguard.BaseDomainConflict(url,
@@ -497,6 +545,14 @@ func (a *app) handleControlPlaneInput(purpose inputPurpose, value string) tea.Cm
 		return a.tookServerURL(value)
 	case inputListenAddr:
 		return a.tookListenAddr(value)
+	case inputACMEEmail:
+		return a.tookACMEEmail(value)
+	case inputTLSCertPath:
+		return a.tookCertPath(value)
+	case inputTLSKeyPath:
+		return a.tookKeyPath(value)
+	case inputBaseDomain:
+		return a.tookBaseDomain(value)
 	case inputOIDCIssuer:
 		return a.tookOIDCIssuer(value)
 	case inputOIDCClientID:

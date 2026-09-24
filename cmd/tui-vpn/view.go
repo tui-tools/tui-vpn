@@ -95,40 +95,105 @@ func (a *app) noteLines() []string {
 // text rather than a table because these are facts about one thing, not rows.
 func (a *app) controlPlanePanel() []string {
 	cp := a.state.Headscale.ControlPlane
-	head := "control plane · " + orDash(cp.ConfigPath)
-	if cp.ServiceState != "" {
-		head += " · headscale " + cp.ServiceState
-	}
-	if cp.ServiceUser != "" {
-		// The account matters because the client secret file is written owned
-		// by it: this is the value that has to be right for the restart.
-		head += " · runs as " + serviceAccount(cp)
+	lines := []string{"control plane · " + orDash(cp.ConfigPath)}
+	if service := serviceLine(cp); service != "" {
+		lines = append(lines, service)
 	}
 	if !cp.Readable {
 		reason := cp.Error
 		if reason == "" {
 			reason = "not read"
 		}
-		return []string{head, "  " + reason + " — it must be readable before it can be edited"}
+		return append(lines, "  "+reason+" — it must be readable before it can be edited")
 	}
 	oidc := cp.OIDC
 	server := "  server_url  " + orDash(cp.ServerURL) +
-		"   listen_addr " + orDash(cp.ListenAddr)
+		"   listen_addr " + orDash(cp.ListenAddr) +
+		"   base_domain " + orDash(cp.BaseDomain)
 	if a.serverURLWarning(cp.ServerURL) != "" {
 		server += "   ⚠"
 	}
-	return []string{
-		head,
-		server,
-		"  oidc        issuer " + orDash(oidc.Issuer) +
-			" · client_id " + orDash(oidc.ClientID) + " · " + secretState(oidc),
-		"  allowed     domains " + listOrDash(oidc.AllowedDomains) +
-			" · groups " + listOrDash(oidc.AllowedGroups) +
-			" · users " + listOrDash(oidc.AllowedUsers),
-		"  scope       " + listOrDash(oidc.Scope) +
-			" · pkce " + onOff(oidc.PKCE) +
-			" · only_start_if_oidc_is_available " + yesNo(oidc.OnlyStartIfAvailable),
+	if own := ownershipLine(cp); own != "" {
+		lines = append(lines, own)
 	}
+	return append(lines,
+		server,
+		"  transport   "+wireguard.TransportNote(cp),
+		"  redirect    "+redirectLine(cp),
+		"  oidc        issuer "+orDash(oidc.Issuer)+
+			" · client_id "+orDash(oidc.ClientID)+" · "+secretState(oidc),
+		"  allowed     domains "+listOrDash(oidc.AllowedDomains)+
+			" · groups "+listOrDash(oidc.AllowedGroups)+
+			" · users "+listOrDash(oidc.AllowedUsers),
+		"  scope       "+listOrDash(oidc.Scope)+
+			" · pkce "+onOff(oidc.PKCE)+
+			" · only_start_if_oidc_is_available "+yesNo(oidc.OnlyStartIfAvailable),
+	)
+}
+
+// redirectLine is the redirect URI an OAuth client for this server has to be
+// registered with, and whether an IdP will accept it: the value an operator
+// otherwise has to work out and type into the IdP's console by hand.
+func redirectLine(cp wireguard.ControlPlane) string {
+	uri := wireguard.RedirectURI(cp.ServerURL)
+	if uri == "" {
+		return "-"
+	}
+	host := wireguard.URLHost(cp.ServerURL)
+	switch {
+	case !wireguard.ServerURLIsHTTPS(cp.ServerURL):
+		return uri + " — most IdPs (Google included) refuse an http redirect"
+	case wireguard.IsIPHost(host):
+		return uri + " — most IdPs (Google included) refuse a redirect on an IP"
+	}
+	return uri + " — register it with the IdP"
+}
+
+// ownershipLine says whether headscale can read its own files. A mismatch is
+// named by its first path, because the first one is usually the whole story
+// (a root-run `headscale` created the key and the database together).
+func ownershipLine(cp wireguard.ControlPlane) string {
+	own := cp.Ownership
+	switch {
+	case !own.Checked:
+		return ""
+	case own.OK():
+		return "  ownership   state, secret and backup owned as expected"
+	}
+	first := own.Issues[0]
+	line := "  ownership   ⚠ " + first.Path + " is " + first.Owner + ", want " + first.Want
+	if more := len(own.Issues) - 1; more > 0 {
+		line += fmt.Sprintf(" (+%d more)", more)
+	}
+	return line + " — F fixes it"
+}
+
+// serviceLine is the state of the unit that reads the configuration: whether
+// it runs, whether it starts at boot, and the account it runs as. Each half is
+// a way the control plane silently goes away: a unit that is not active, a
+// unit that is disabled and so gone after the next reboot, and an account that
+// cannot read the files the tool writes for it.
+func serviceLine(cp wireguard.ControlPlane) string {
+	parts := []string{}
+	if cp.ServiceState != "" {
+		parts = append(parts, cp.ServiceState)
+	}
+	if cp.ServiceEnabled != "" {
+		enabled := cp.ServiceEnabled
+		if wireguard.ServiceNeedsEnable(enabled) {
+			enabled += " (won't start at boot)"
+		}
+		parts = append(parts, enabled)
+	}
+	if cp.ServiceUser != "" {
+		// The account matters because the client secret file is written owned
+		// by it: this is the value that has to be right for the restart.
+		parts = append(parts, "runs as "+serviceAccount(cp))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "  service     headscale " + strings.Join(parts, " · ")
 }
 
 // secretState says whether a client secret is configured, and never more than
@@ -566,7 +631,8 @@ func (a *app) shortHelpKeys() []ui.KeyHint {
 			ui.KeyHint{Key: "w", Desc: "save"})
 	case wireguard.ScreenUsers:
 		hints = append(hints, ui.KeyHint{Key: "n", Desc: "new user"},
-			ui.KeyHint{Key: "S", Desc: "server"}, ui.KeyHint{Key: "O", Desc: "oidc"})
+			ui.KeyHint{Key: "S", Desc: "server"}, ui.KeyHint{Key: "O", Desc: "oidc"},
+			ui.KeyHint{Key: "F", Desc: "fix owner"})
 	case wireguard.ScreenNodes:
 		hints = append(hints,
 			ui.KeyHint{Key: "e", Desc: "expire"}, ui.KeyHint{Key: "m", Desc: "rename"},
@@ -598,10 +664,14 @@ func helpKeys() []ui.KeyHint {
 		{Key: "", Desc: "to also generate a pre-shared key file)"},
 		{Key: "n", Desc: "create a Headscale user (users) / pre-auth key (keys)"},
 		{Key: "e / m / x", Desc: "expire / rename / delete the selected node"},
-		{Key: "S", Desc: "server settings (users): server_url and listen_addr in"},
-		{Key: "", Desc: "/etc/headscale/config.yaml, then a restart"},
+		{Key: "S", Desc: "server settings (users): transport (plain http, Let's"},
+		{Key: "", Desc: "Encrypt, own certificate, reverse proxy), server_url,"},
+		{Key: "", Desc: "listen_addr and dns.base_domain, then a restart (or an"},
+		{Key: "", Desc: "enable, when the unit is disabled)"},
 		{Key: "O", Desc: "identity provider (users): issuer, client id, secret,"},
 		{Key: "", Desc: "allow lists, scope, pkce — then a restart"},
+		{Key: "F", Desc: "fix ownership (users): chown headscale's state files, and"},
+		{Key: "", Desc: "the secret and backup this tool writes, to who needs them"},
 		{Key: "", Desc: ""},
 		{Key: "identity", Desc: "login is OIDC in the client's browser against your IdP;"},
 		{Key: "", Desc: "the Headscale server exposes no web admin, by design."},

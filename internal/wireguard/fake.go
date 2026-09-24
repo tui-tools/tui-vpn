@@ -26,7 +26,15 @@ type Fake struct {
 	// control-plane flows are exercised for real: the diff the confirm dialog
 	// shows under --demo is computed by the same editor that runs on a router.
 	config string
-	run    *runner.Fake
+	// serviceState and serviceEnabled are the demo unit's is-active and
+	// is-enabled answers. They live outside the parsed state so a re-read of
+	// the configuration keeps them, the way a real re-read would.
+	serviceState, serviceEnabled string
+	// stats is the demo's filesystem as `stat` would report it: who owns
+	// headscale's state files and the files this tool writes. chown applies to
+	// it, and the ownership check reads it, exactly like the real ones.
+	stats map[string]FileStat
+	run   *runner.Fake
 }
 
 // Demonstration keys. They are valid WireGuard key syntax (43 base64 characters
@@ -54,7 +62,12 @@ func DemoPeer2Pub() string { return demoPeer2Pub }
 // two peers — one mid-handshake, one that has never connected — and a Headscale
 // control plane with two users, three nodes and a pre-auth key.
 func NewFake() *Fake {
-	f := &Fake{state: demoState(), config: demoHeadscaleConfig}
+	// The demo unit is running but disabled: started by hand after the
+	// package installed it, the way a fresh install usually ends up, and
+	// gone after the next reboot. It is what makes the enable at the end of
+	// S and O visible under --demo.
+	f := &Fake{state: demoState(), config: demoHeadscaleConfig,
+		serviceState: "active", serviceEnabled: "disabled", stats: demoStats()}
 	f.run = &runner.Fake{Hook: f.apply}
 	f.reloadControlPlane()
 	return f
@@ -66,13 +79,23 @@ func NewFake() *Fake {
 // everything it does not touch. Every host in it is a documentation name.
 const demoHeadscaleConfig = `# headscale configuration (demo)
 
+# Behind a reverse proxy: TLS ends in front, headscale listens on loopback.
 server_url: https://vpn.example.com
-listen_addr: 0.0.0.0:8080
+listen_addr: 127.0.0.1:8080
 metrics_listen_addr: 127.0.0.1:9090
+
+tls_letsencrypt_hostname: ""
+tls_cert_path: ""
+tls_key_path: ""
 
 # The pre-shared key file for DERP, unrelated to OIDC.
 noise:
   private_key_path: /var/lib/headscale/noise_private.key
+
+database:
+  type: sqlite
+  sqlite:
+    path: /var/lib/headscale/db.sqlite
 
 prefixes:
   v4: 100.64.0.0/10
@@ -89,9 +112,89 @@ oidc:
   pkce:
     enabled: true
 
+dns:
+  magic_dns: true
+  base_domain: tailnet.example.net
+
 log:
   level: info
 `
+
+// demoStats is the demo's filesystem. Everything belongs where it should
+// except the noise private key, which is root's: the leftover of a
+// `sudo headscale configtest` run before the first start. It is mode 644, so
+// the running demo server could still read it, which keeps the demo coherent;
+// on a real host the same mistake is usually 600 and the service fails.
+func demoStats() map[string]FileStat {
+	stats := map[string]FileStat{}
+	for _, st := range []FileStat{
+		{Path: HeadscaleStateDir, User: "headscale", Group: "headscale", Mode: 0o750},
+		{Path: HeadscaleStateDir + "/noise_private.key", User: "root", Group: "root", Mode: 0o644},
+		{Path: HeadscaleStateDir + "/db.sqlite", User: "headscale", Group: "headscale", Mode: 0o640},
+		{Path: OIDCClientSecretPath, User: "headscale", Group: "headscale", Mode: 0o600},
+		{Path: HeadscaleConfigPath, User: "root", Group: "root", Mode: 0o644},
+		// Two certificate pairs for the own-certificate transport: the one
+		// tui-cert issues into its root-only directory, which the service
+		// account cannot enter, and a copy installed for headscale.
+		{Path: "/etc", User: "root", Group: "root", Mode: 0o755},
+		{Path: "/etc/headscale", User: "root", Group: "root", Mode: 0o755},
+		{Path: "/etc/ssl", User: "root", Group: "root", Mode: 0o755},
+		{Path: "/etc/ssl/tui-cert", User: "root", Group: "root", Mode: 0o700},
+		{Path: "/etc/ssl/tui-cert/vpn.example.com.crt", User: "root", Group: "root", Mode: 0o644},
+		{Path: "/etc/ssl/tui-cert/vpn.example.com.key", User: "root", Group: "root", Mode: 0o600},
+		{Path: "/etc/headscale/tls", User: "root", Group: "headscale", Mode: 0o750},
+		{Path: "/etc/headscale/tls/vpn.example.com.crt", User: "root", Group: "headscale", Mode: 0o644},
+		{Path: "/etc/headscale/tls/vpn.example.com.key", User: "root", Group: "headscale", Mode: 0o640},
+	} {
+		stats[st.Path] = st
+	}
+	return stats
+}
+
+// SetStat replaces one path's owner and mode in the demo's filesystem, so a
+// test can stage the ownership it wants to drive a flow from.
+func (f *Fake) SetStat(st FileStat) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stats[st.Path] = st
+	f.reloadControlPlane()
+}
+
+// Stat answers the way `stat` would for the demo's filesystem.
+func (f *Fake) Stat(_ context.Context, paths []string) map[string]FileStat {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.statPaths(paths)
+}
+
+// statPaths answers the way `stat` would for the demo's filesystem.
+func (f *Fake) statPaths(paths []string) map[string]FileStat {
+	out := map[string]FileStat{}
+	for _, p := range paths {
+		if st, ok := f.stats[p]; ok {
+			out[p] = st
+		}
+	}
+	return out
+}
+
+// chown applies a previewed chown to the demo's filesystem.
+func (f *Fake) chown(argv []string) (string, error) {
+	recursive := len(argv) == 4 && argv[1] == "-R"
+	owner, target := argv[len(argv)-2], argv[len(argv)-1]
+	user, group, ok := strings.Cut(owner, ":")
+	if !ok {
+		return "", fmt.Errorf("chown: invalid owner %q", owner)
+	}
+	for p, st := range f.stats {
+		if p == target || (recursive && strings.HasPrefix(p, target+"/")) {
+			st.User, st.Group = user, group
+			f.stats[p] = st
+		}
+	}
+	f.reloadControlPlane()
+	return "", nil
+}
 
 // reloadControlPlane re-reads the demo's configuration into the state, the way
 // a reload on a real host would.
@@ -102,12 +205,34 @@ func (f *Fake) reloadControlPlane() {
 			ConfigPath: HeadscaleConfigPath, Error: err.Error()}
 		return
 	}
-	cp.ServiceState = "active"
+	cp.ServiceState = f.serviceState
+	cp.ServiceEnabled = f.serviceEnabled
 	// The demo's unit runs headscale as its own user, which is the case the
 	// secret write has to get right: an `install` without -o would leave the
 	// service unable to read its own secret.
 	cp.ServiceUser, cp.ServiceGroup = "headscale", "headscale"
+	cp.Ownership = CheckOwnership(cp, f.statPaths(OwnershipPaths(cp)))
 	f.state.Headscale.ControlPlane = cp
+}
+
+// SetService sets the demo unit's is-active and is-enabled answers, so a test
+// can put the fake in the state it wants to drive a flow from (a fresh
+// install is "inactive" and "disabled").
+func (f *Fake) SetService(active, enabled string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.serviceState, f.serviceEnabled = active, enabled
+	f.reloadControlPlane()
+}
+
+// SetConfig replaces the demo's config.yaml, so a test can drive a flow from
+// another starting point: the file the package ships, or one set up for
+// another transport.
+func (f *Fake) SetConfig(config string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.config = config
+	f.reloadControlPlane()
 }
 
 // Name identifies the backend.
@@ -186,8 +311,19 @@ func (f *Fake) apply(cmd runner.Command) (string, error) {
 	case len(argv) >= 4 && argv[0] == "systemctl" && argv[1] == "show":
 		return "User=headscale\nGroup=headscale", nil
 	case len(argv) == 3 && argv[0] == "systemctl" && argv[1] == "restart":
-		f.state.Headscale.ControlPlane.ServiceState = "active"
+		f.serviceState = "active"
+		f.state.Headscale.ControlPlane.ServiceState = f.serviceState
 		return "", nil
+	case len(argv) >= 3 && argv[0] == "systemctl" && argv[1] == "enable":
+		f.serviceEnabled = "enabled"
+		if hasToken(argv, "--now") {
+			f.serviceState = "active"
+		}
+		f.state.Headscale.ControlPlane.ServiceState = f.serviceState
+		f.state.Headscale.ControlPlane.ServiceEnabled = f.serviceEnabled
+		return "Created symlink /etc/systemd/system/multi-user.target.wants/headscale.service.", nil
+	case (len(argv) == 3 || len(argv) == 4) && argv[0] == "chown":
+		return f.chown(argv)
 	case len(argv) >= 2 && argv[0] == "curl":
 		return demoDiscoveryDocument, nil
 	default:
@@ -300,6 +436,11 @@ func (f *Fake) writeHeadscaleConfig(content string) (string, error) {
 		return "", fmt.Errorf("refusing to write an empty configuration")
 	}
 	secretSet := f.state.Headscale.ControlPlane.OIDC.ClientSecretSet
+	// `cp -p` takes the backup with config.yaml's own owner and mode.
+	if cfg, ok := f.stats[HeadscaleConfigPath]; ok {
+		cfg.Path = HeadscaleConfigBackupPath
+		f.stats[cfg.Path] = cfg
+	}
 	f.config = content
 	f.reloadControlPlane()
 	f.state.Headscale.ControlPlane.OIDC.ClientSecretSet =

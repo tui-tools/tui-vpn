@@ -55,6 +55,21 @@ func TestRunCheckPrintsOneReadOfEverything(t *testing.T) {
 	if !report.Headscale.OIDCConfigured {
 		t.Error("the demo control plane is OIDC-configured; --check should say so")
 	}
+	// The demo's unit runs but is disabled, which --check has to say: it is
+	// the state that loses the control plane at the next reboot.
+	if got := report.Headscale.ControlPlane.ServiceEnabled; got != "disabled" {
+		t.Errorf("serviceEnabled = %q, want disabled", got)
+	}
+	// The demo's noise key is root's, which --check names by path.
+	cps := report.Headscale.ControlPlane
+	if !cps.OwnershipChecked || cps.OwnershipOK || len(cps.OwnershipIssues) != 1 ||
+		cps.OwnershipIssues[0].Path != "/var/lib/headscale/noise_private.key" {
+		t.Errorf("ownership = %v %v %+v", cps.OwnershipChecked, cps.OwnershipOK,
+			cps.OwnershipIssues)
+	}
+	if cps.ServiceAccount != "headscale:headscale" {
+		t.Errorf("serviceAccount = %q", cps.ServiceAccount)
+	}
 	if report.Headscale.NodesExpired != 1 {
 		t.Errorf("nodesExpired = %d, want 1 (the demo has one expired node)", report.Headscale.NodesExpired)
 	}
@@ -126,8 +141,16 @@ func TestCheckCarriesNoAddressOfThisHost(t *testing.T) {
 	if !cp.ServerURLSet || !cp.ServerURLHTTPS || cp.ServerURLLoopback {
 		t.Errorf("the server_url booleans do not describe the demo: %+v", cp)
 	}
-	if cp.ListenPort != 8080 || cp.ListenLoopback {
+	// The demo sits behind a reverse proxy: headscale binds loopback.
+	if cp.ListenPort != 8080 || !cp.ListenLoopback {
 		t.Errorf("listen port = %d, loopback = %v", cp.ListenPort, cp.ListenLoopback)
+	}
+	if cp.Transport != wireguard.TransportReverseProxy || cp.ServerURLIsIP {
+		t.Errorf("transport = %q, ip = %v", cp.Transport, cp.ServerURLIsIP)
+	}
+	if cp.BaseDomain != "tailnet.example.net" || cp.BaseDomainConflict || !cp.MagicDNS {
+		t.Errorf("base domain = %q, conflict %v, magic %v", cp.BaseDomain,
+			cp.BaseDomainConflict, cp.MagicDNS)
 	}
 	if cp.OIDCIssuer != "idp.example.com" {
 		t.Errorf("oidcIssuer = %q, want the host alone", cp.OIDCIssuer)

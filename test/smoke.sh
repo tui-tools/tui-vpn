@@ -126,6 +126,63 @@ check "check --demo carries no URL either" \
   "$bin --demo --check | grep -c '://' || true" \
   '^0$'
 
+# Whether the unit starts at boot is the half of "is it running" a fresh
+# install gets wrong: the package leaves it disabled.
+check "check --demo says whether the unit starts at boot" \
+  "$bin --demo --check" \
+  '"serviceEnabled": "disabled"'
+
+# On a machine with headscale installed, the same fact comes from the real
+# unit, and has to agree with systemd's own answer.
+if command -v headscale >/dev/null 2>&1; then
+  enabled=$(systemctl is-enabled headscale 2>/dev/null | head -1)
+  check "check agrees with systemctl about the unit starting at boot" \
+    "sudo -n $bin --check" \
+    "\"serviceEnabled\": \"${enabled:-unknown}\""
+fi
+
+# The ownership check: the demo's noise key is root's, the way a root-run
+# `headscale configtest` leaves it, and --check names the path.
+check "check --demo names a state file the service account does not own" \
+  "$bin --demo --check" \
+  '"path": "/var/lib/headscale/noise_private.key"'
+
+# On a machine with headscale, the check has to have run (stat reached the
+# state directory through sudo -n) and agree with stat about the directory.
+if command -v headscale >/dev/null 2>&1; then
+  check "check ran the ownership check on the real state directory" \
+    "sudo -n $bin --check" \
+    '"ownershipChecked": true'
+
+  owner=$(sudo -n stat -c %U:%G /var/lib/headscale 2>/dev/null)
+  account=$(systemctl show headscale -p User --value 2>/dev/null)
+  if [[ -n $owner && -n $account && ${owner%%:*} != "$account" ]]; then
+    check "check reports the state directory owned by the wrong account" \
+      "sudo -n $bin --check" \
+      '"path": "/var/lib/headscale"'
+  elif [[ -n $owner ]]; then
+    check "check does not flag a state directory the service owns" \
+      "sudo -n $bin --check | grep -c '\"path\": \"/var/lib/headscale\"' || true" \
+      '^0$'
+  fi
+fi
+
+# The transport, read from the TLS settings and the bind: the demo sits behind
+# a reverse proxy, with a MagicDNS domain outside its server_url host.
+check "check --demo names the transport" \
+  "$bin --demo --check" \
+  '"transport": "reverse-proxy"'
+
+check "check --demo reports the base domain without a conflict" \
+  "$bin --demo --check" \
+  '"baseDomainConflict": false'
+
+if command -v headscale >/dev/null 2>&1; then
+  check "check reads a transport from the real configuration" \
+    "sudo -n $bin --check" \
+    '"transport": "(plain-http|letsencrypt|own-cert|reverse-proxy)"'
+fi
+
 check "check --demo keeps the inference as a separate field" \
   "$bin --demo --check" \
   '"oidcInferred":'
@@ -140,6 +197,42 @@ check "check --demo reports the secret as set, never its value" \
 check "check --demo has no field that could hold a secret" \
   "$bin --demo --check | grep -icE '\"(oidc)?[a-z]*clientsecret\": \"' || true" \
   '^0$'
+
+# --- compatibility evidence ------------------------------------------------
+#
+# record_compat turns this run into the evidence `tested` is generated from:
+# one line per backend whose version the tool itself probed, printed behind
+# `compat-result:` so it survives the trip out of the guest in the lab's log,
+# and appended to $TUI_COMPAT_RESULTS as well for a run outside the lab.
+# tui-vpn drives two backends, so --check's compat block is a list: each
+# entry names a backend and, when the probe could read one, its version.
+TOOL=tui-vpn
+record_compat() {
+  local report="$1" outcome="$2" distro today backend version line
+  distro=$(. /etc/os-release && echo "${ID}-${VERSION_ID:-rolling}")
+  today=$(date -u +%Y-%m-%d)
+  local recorded=0
+  while IFS=$'\t' read -r backend version; do
+    [[ -n $backend && -n $version ]] || continue
+    line=$(printf '{"backend":"%s","date":"%s","distro":"%s","result":"%s","suite":"smoke","tool":"%s","version":"%s"}' \
+      "$backend" "$today" "$distro" "$outcome" "$TOOL" "$version")
+    printf 'compat-result: %s\n' "$line"
+    if [[ -n ${TUI_COMPAT_RESULTS:-} ]]; then
+      printf '%s\n' "$line" >>"$TUI_COMPAT_RESULTS"
+    fi
+    recorded=$((recorded + 1))
+  done < <(sed -n '/"compat": \[/,/^  \]/p' <<<"$report" | awk '
+    /"backend":/ { if (b != "") print b "\t" v; gsub(/.*"backend": "|".*/, ""); b = $0; v = "" }
+    /"version":/ { gsub(/.*"version": "|".*/, ""); v = $0 }
+    END { if (b != "") print b "\t" v }')
+  if [[ $recorded -eq 0 ]]; then
+    echo "      no version was probed, so no compatibility result is recorded"
+  fi
+}
+
+outcome=pass
+[[ $fail -eq 0 ]] || outcome=fail
+record_compat "$(sudo -n "$bin" --check 2>/dev/null)" "$outcome"
 
 echo "--- tui-vpn: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

@@ -34,6 +34,10 @@ var searchPaths = map[string][]string{
 	// IdP's discovery document, fetched from the router itself because the
 	// router is what will have to reach the IdP.
 	"curl": {"/usr/bin/curl", "/bin/curl"},
+	// stat reads who owns headscale's state files and the files this tool
+	// writes for it; chown is the previewed fix when the answer is wrong.
+	"stat":  {"/usr/bin/stat", "/bin/stat"},
+	"chown": {"/usr/bin/chown", "/bin/chown"},
 }
 
 // privilegedRead marks the binaries whose reads need root. Reading a WireGuard
@@ -49,6 +53,9 @@ var privilegedRead = map[string]bool{
 	"systemctl": false,
 	// curl reads the public internet, which needs no privilege at all.
 	"curl": false,
+	// The state directory is mode 750 and owned by the service account, so
+	// only root can see inside it.
+	"stat": true,
 }
 
 // neverEscalate marks the binaries that must run as the invoking user even
@@ -274,13 +281,42 @@ func (r *Real) loadControlPlane(ctx context.Context) ControlPlane {
 	}
 	cp = parsed
 	cp.ServiceState = r.serviceState(ctx)
+	cp.ServiceEnabled = r.serviceEnabled(ctx)
 	cp.ServiceUser, cp.ServiceGroup = r.serviceAccount(ctx)
+	cp.Ownership = r.checkOwnership(ctx, cp)
 	return cp
 }
 
+// checkOwnership stats headscale's state paths and the tool's own files, and
+// compares their owners with the account the unit runs as. `stat` exits
+// non-zero when any path is missing — the database of a server that never
+// started, a backup never taken — and still prints every path it found, so
+// its output is parsed whatever the exit status. Only a read that printed
+// nothing at all leaves the ownership unchecked.
+func (r *Real) checkOwnership(ctx context.Context, cp ControlPlane) Ownership {
+	stats := r.Stat(ctx, OwnershipPaths(cp))
+	if len(stats) == 0 {
+		return Ownership{}
+	}
+	return CheckOwnership(cp, stats)
+}
+
+// Stat reads owner, group and mode of each path, escalated. `stat` exits
+// non-zero when any path is missing and still prints every one it found, so
+// the output is parsed whatever the exit status.
+func (r *Real) Stat(ctx context.Context, paths []string) map[string]FileStat {
+	run, err := r.runnerFor("stat")
+	if err != nil || len(paths) == 0 {
+		return map[string]FileStat{}
+	}
+	out, _ := run.Read(ctx, StatArgv(paths)...)
+	return ParseStat(out)
+}
+
 // serviceAccount asks systemd which account the headscale unit runs as. It is
-// what the client secret file must be owned by: the deb's unit runs as root,
-// the Arch package's runs headscale as its own user, and a file the service
+// what the client secret file must be owned by: headscale's own .deb and the
+// Arch package run it as a dedicated user, older or hand-written units run it
+// as root, and a file the service
 // cannot read is a service that will not come back from the restart.
 func (r *Real) serviceAccount(ctx context.Context) (user, group string) {
 	run, err := r.runnerFor("systemctl")
@@ -301,6 +337,21 @@ func (r *Real) serviceState(ctx context.Context) string {
 	}
 	out, _ := run.Read(ctx, "systemctl", "is-active", HeadscaleService)
 	if state := strings.TrimSpace(runner.FirstLine(out)); state != "" {
+		return state
+	}
+	return "unknown"
+}
+
+// serviceEnabled asks systemd whether the headscale unit starts at boot. Like
+// is-active, is-enabled exits non-zero for most of its answers ("disabled"
+// among them), and the word it printed is the answer either way.
+func (r *Real) serviceEnabled(ctx context.Context) string {
+	run, err := r.runnerFor("systemctl")
+	if err != nil {
+		return "unknown"
+	}
+	out, _ := run.Read(ctx, "systemctl", "is-enabled", HeadscaleService)
+	if state := strings.TrimSpace(runner.FirstLine(out)); state != "" && !strings.Contains(state, " ") {
 		return state
 	}
 	return "unknown"

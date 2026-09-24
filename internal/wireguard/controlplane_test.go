@@ -293,17 +293,27 @@ func TestServerURLValidationAndWarnings(t *testing.T) {
 	for _, tc := range []struct {
 		url         string
 		valid       bool
+		oidc        bool
 		wantWarning bool
 	}{
-		{"https://vpn.example.com", true, false},
-		{"https://vpn.example.com:8443", true, false},
-		{"http://vpn.example.com", true, true},
-		{"https://127.0.0.1:8080", true, true},
-		{"https://localhost:8080", true, true},
-		{"vpn.example.com", false, false},
-		{"", false, false},
-		{"https://vpn.example.com\nrm -rf /", false, false},
-		{"-https://vpn.example.com", false, false},
+		{"https://vpn.example.com", true, true, false},
+		{"https://vpn.example.com:8443", true, true, false},
+		// Plain http is fine for clients; it only breaks an OIDC login.
+		{"http://vpn.example.com", true, false, false},
+		{"http://203.0.113.10:443", true, false, false},
+		{"http://vpn.example.com", true, true, true},
+		// A raw IP is fine for clients too, and breaks an OIDC login the
+		// same way: IdPs refuse a redirect URI on an IP address.
+		{"https://203.0.113.10", true, false, false},
+		{"https://203.0.113.10", true, true, true},
+		{"https://[2001:db8::1]:443", true, true, true},
+		{"https://127.0.0.1:8080", true, false, true},
+		{"https://localhost:8080", true, false, true},
+		{"http://127.0.0.1:8080", true, false, true},
+		{"vpn.example.com", false, false, false},
+		{"", false, false, false},
+		{"https://vpn.example.com\nrm -rf /", false, false, false},
+		{"-https://vpn.example.com", false, false, false},
 	} {
 		if got := ValidServerURL(tc.url); got != tc.valid {
 			t.Errorf("ValidServerURL(%q) = %v, want %v", tc.url, got, tc.valid)
@@ -311,8 +321,9 @@ func TestServerURLValidationAndWarnings(t *testing.T) {
 		if !tc.valid {
 			continue
 		}
-		if got := ServerURLWarning(tc.url) != ""; got != tc.wantWarning {
-			t.Errorf("ServerURLWarning(%q) present = %v, want %v", tc.url, got, tc.wantWarning)
+		if got := ServerURLWarning(tc.url, tc.oidc) != ""; got != tc.wantWarning {
+			t.Errorf("ServerURLWarning(%q, oidc %v) present = %v, want %v",
+				tc.url, tc.oidc, got, tc.wantWarning)
 		}
 	}
 }
@@ -698,5 +709,44 @@ func TestEditRealHeadscaleConfig(t *testing.T) {
 	}
 	if len(again) != 0 {
 		t.Errorf("re-applying the same settings is not idempotent: %+v", again)
+	}
+}
+
+// TestEnableHeadscale: a disabled unit is the one case that needs enabling,
+// and the two forms of the enable are the two situations it can be in.
+func TestEnableHeadscale(t *testing.T) {
+	for state, want := range map[string]bool{
+		"disabled": true, "enabled": false, "static": false, "masked": false,
+		"indirect": false, "unknown": false, "": false,
+	} {
+		if got := ServiceNeedsEnable(state); got != want {
+			t.Errorf("ServiceNeedsEnable(%q) = %v, want %v", state, got, want)
+		}
+	}
+	now, err := BuildEnableHeadscale(true)
+	if err != nil || now.String() != "systemctl enable --now headscale" {
+		t.Errorf("enable --now = %q, %v", now.String(), err)
+	}
+	if !now.Destructive {
+		t.Error("starting the control plane is as disruptive as restarting it")
+	}
+	plain, err := BuildEnableHeadscale(false)
+	if err != nil || plain.String() != "systemctl enable headscale" {
+		t.Errorf("enable = %q, %v", plain.String(), err)
+	}
+}
+
+func TestRedirectURI(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://vpn.example.com":      "https://vpn.example.com/oidc/callback",
+		"https://vpn.example.com/":     "https://vpn.example.com/oidc/callback",
+		"https://vpn.example.com:8443": "https://vpn.example.com:8443/oidc/callback",
+		"http://203.0.113.10:443":      "http://203.0.113.10:443/oidc/callback",
+		"":                             "",
+		"  https://vpn.example.com  ":  "https://vpn.example.com/oidc/callback",
+	} {
+		if got := RedirectURI(in); got != want {
+			t.Errorf("RedirectURI(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

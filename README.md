@@ -36,13 +36,13 @@ tui-vpn --demo
 
 - **interfaces** — the WireGuard interfaces on this host, with peer counts and state. `N` creates one from zero, `u` / `d` bring one up or down, `w` saves its runtime config.
 - **peers** — the peers of the selected interface: endpoint, handshake age, transfer, allowed-ips, keepalive. `a` / `x` add or remove a peer (end the add line with `psk` to also generate a pre-shared key file); `w` saves.
-- **users** — the Headscale users, and the provider they authenticate against, under a panel showing what `/etc/headscale/config.yaml` says: `server_url`, `listen_addr`, the OIDC issuer and client id, whether a client secret is set, the allow lists, and the state of the `headscale` unit. `n` creates a user; `S` and `O` configure the control plane.
+- **users** — the Headscale users, and the provider they authenticate against, under a panel showing what `/etc/headscale/config.yaml` says: `server_url`, `listen_addr`, `dns.base_domain`, the transport and the OIDC redirect URI it implies, the OIDC issuer and client id, whether a client secret is set, the allow lists, and the state of the `headscale` unit: active or not, enabled at boot or not, the account it runs as, and whether that account owns its state files. `n` creates a user; `S` and `O` configure the control plane; `F` fixes the ownership of headscale's files.
 - **nodes** — the machines registered with Headscale, who owns each, and key expiry. `e` expires one, `m` renames one, `x` deletes one.
 - **preauth keys** — the keys that let a machine register itself, shown by prefix only. `n` creates one, shown exactly once.
 
 ![The peers screen: endpoints, handshake age and transfer for the selected interface](docs/screenshots/tui-vpn-peers.png)
 
-![The users screen, under the control-plane panel: server_url, listen_addr, the OIDC issuer and client id, and that a client secret is set](docs/screenshots/tui-vpn-users.png)
+![The users screen, under the control-plane panel: the unit's state and account, file ownership, server_url, transport, base domain, the OIDC redirect URI, issuer and client id, and that a client secret is set](docs/screenshots/tui-vpn-users.png)
 
 The panel is the answer to what the identity note used to leave hanging: which IdP, reachable at which URL, and whether a secret is set — never what it is.
 
@@ -78,12 +78,40 @@ Pick the owning user by id and optionally add the words `reusable`, `ephemeral` 
 
 ### Server settings (`S` on the users screen)
 
-`S` asks for two values and writes them into `/etc/headscale/config.yaml`:
+`S` is how clients reach the control plane. It starts with the **transport**, because the transport decides what every later answer means, and writes only the lines that transport needs into `/etc/headscale/config.yaml`:
 
-- **`server_url`** — the base URL clients reach the control plane on, and the URL your IdP redirects a browser back to. tui-vpn warns when it is plain `http` (most IdPs refuse an http redirect URI) or points at loopback (a client's browser cannot reach it). It has to be reachable from the clients' own networks: [tui-cert](https://github.com/tui-tools/tui-cert) issues the certificate, [tui-firewall](https://github.com/tui-tools/tui-firewall) opens the port.
-- **`listen_addr`** — the address headscale binds. Loopback or an internal address when a reverse proxy terminates TLS in front of it, `0.0.0.0` when it does not.
+| Transport | `server_url` | `listen_addr` | What else is written | What is cleared |
+| --- | --- | --- | --- | --- |
+| **plain http** | `http://`, an IP or a name | proposed as `0.0.0.0:<the URL's port>` | nothing | `tls_letsencrypt_hostname`, `tls_cert_path`, `tls_key_path` |
+| **Let's Encrypt** | `https://` and a public DNS name; an IP is refused | `0.0.0.0:443` | `tls_letsencrypt_hostname` (the URL's host), `tls_letsencrypt_challenge_type` (`TLS-ALPN-01` when port 80 is closed, `HTTP-01` otherwise), `acme_email` (optional) | `tls_cert_path`, `tls_key_path` |
+| **own certificate** | `https://` and the name on the certificate | `0.0.0.0:443` | `tls_cert_path`, `tls_key_path` | `tls_letsencrypt_hostname` |
+| **reverse proxy** | `https://` and the name the proxy serves | loopback, refused otherwise | nothing: TLS ends at the proxy | `tls_letsencrypt_hostname`, `tls_cert_path`, `tls_key_path` |
 
-The confirm dialog shows a **diff of the changed lines and nothing else**, then the write, then `systemctl restart headscale` as a separate, optional confirm.
+"Cleared" means emptied where the file already has the key, and left alone where it does not: switching from Let's Encrypt to plain http empties `tls_letsencrypt_hostname`, so headscale stops asking for a certificate nobody wants, and a file that never had the key gains no empty line.
+
+Every transport ends with **`dns.base_domain`**, the MagicDNS domain nodes are named under. It is checked the way headscale checks it at startup: a valid DNS name, required while `dns.magic_dns` is on, and not a suffix of the `server_url` host (MagicDNS owns every name under it, so clients could not reach the control plane, and headscale refuses to start).
+
+A refused answer reopens its own step with the reason on top and what you typed still in it.
+
+**Plain http is a real option, not a mistake.** The Tailscale control protocol runs over Noise, so everything between clients and headscale is encrypted and authenticated whatever the URL scheme. The one thing that needs https is a browser: an OIDC login redirects to `<server_url>/oidc/callback`, and Google and most other IdPs refuse a redirect URI that is plain http or names a raw IP. So the panel explains plain http instead of warning about it, and only when OIDC is configured do the form and the confirm dialog say, before and after the answer, that browser logins will fail. The panel also shows that redirect URI, next to whether an IdP will accept it, because it is the value an OAuth client has to be registered with.
+
+The painless case, a server reached by IP: pick **plain http**, type `http://203.0.113.10:443`, accept the proposed `0.0.0.0:443`, and give a private base domain such as `tailnet.internal`. The diff is three lines.
+
+**An own certificate is checked before it is written.** The form `stat`s the certificate, the key and every directory above them from this machine, and refuses a pair the account headscale runs as cannot reach, naming the file or directory in the way. The pair [tui-cert](https://github.com/tui-tools/tui-cert) issues lives in its root-only `/etc/ssl/tui-cert`, which a `headscale` user cannot enter: its install step copies the pair wherever the service can read it. A path under `/home` or `/tmp` gets a warning, because the packaged unit hides those trees from the service. [tui-firewall](https://github.com/tui-tools/tui-firewall) opens the port, or port 80 for `HTTP-01`.
+
+The confirm dialog shows a **diff of the changed lines and nothing else** (a value already in the file, however it is quoted, is not a change), then the write, then the step that makes headscale read it as a separate, optional confirm (see [The last step: restart, or enable](#the-last-step-restart-or-enable)).
+
+### The last step: restart, or enable
+
+`S` and `O` both end by making headscale read the new configuration, and what that takes depends on the unit, which the panel shows next to its active state (`headscale active · enabled`):
+
+| The unit is | The last step previews |
+| --- | --- |
+| enabled (or static, indirect: anything that already starts at boot) | `systemctl restart headscale` |
+| disabled and not running, which is how a fresh package install leaves it | `systemctl enable --now headscale` |
+| disabled but running, started by hand | `systemctl enable headscale`, then `systemctl restart headscale` as its own confirm |
+
+A disabled unit is the trap: a restart brings the control plane up now, and it is gone after the next reboot. `enable --now` would not help the third row either, because it leaves a running unit alone and the new configuration would never be read. Esc at any of these steps leaves the file written and the unit as it was.
 
 ### Identity provider (OIDC)
 
@@ -104,9 +132,31 @@ A secret found sitting *inline* in `config.yaml` — someone else's setup, or an
 
 **The issuer is checked before saving.** tui-vpn fetches `<issuer>/.well-known/openid-configuration` with `curl` **from the server itself** — the machine that will have to reach the IdP — and reports what it found. A failure is a warning, not a refusal: an IdP that is down this minute is not a reason to be unable to write down its address.
 
-**Then a restart.** A configuration change does nothing until the unit that reads it restarts, so the flow ends with `systemctl restart headscale` as its own confirm. Esc there leaves the file written and the running server on the old settings.
+**Then a restart.** A configuration change does nothing until the unit that reads it restarts, so the flow ends with `systemctl restart headscale` as its own confirm, or with the enable a disabled unit needs (see [the last step](#the-last-step-restart-or-enable)). Esc there leaves the file written and the running server on the old settings.
 
-**The secret file is owned by the service, not by root.** tui-vpn reads `systemctl show headscale -p User -p Group` and hands the file to that account in the same previewed `install`, so there is no second step and no window in which the ownership is wrong. It matters because the packages disagree: the `.deb`'s unit runs headscale as root, while the Arch package runs it as its own `headscale` user — and a root-only secret file would leave that service unable to read its own credential and unable to come back from the restart at the end of the flow. A unit that names no user gets `root:root`, which is what systemd would have used anyway. The mode stays `600` in every case: the owner is what changes, so the file is readable by exactly one account either way. The panel shows which account that is, next to the unit's state.
+**The secret file is owned by the service, not by root.** tui-vpn reads `systemctl show headscale -p User -p Group` and hands the file to that account in the same previewed `install`, so there is no second step and no window in which the ownership is wrong. It matters because units disagree: headscale's own `.deb` (0.29.3, checked on a real Ubuntu 24.04 host) and the Arch package run it as a dedicated `headscale` user, while a hand-written or older unit may run it as root — and a root-only secret file would leave a `headscale`-user service unable to read its own credential and unable to come back from the restart at the end of the flow. A unit that names no user gets `root:root`, which is what systemd would have used anyway. The mode stays `600` in every case: the owner is what changes, so the file is readable by exactly one account either way. The panel shows which account that is, next to the unit's state.
+
+### State ownership (`F` on the users screen)
+
+A common way to break a fresh control plane without noticing: run `sudo headscale configtest` (or any `headscale` subcommand) as root before the first start. That creates the noise private key and the SQLite database owned by `root`, while the packaged unit runs as `User=headscale`, and the service then fails at the restart that ends `S` or `O` with nothing pointing at the cause. systemd's `StateDirectory=` does not help: it fixes the owner of `/var/lib/headscale` itself, not of the files already inside it.
+
+So the panel checks. It reads the unit's `User`/`Group` (the same read the secret file uses) and `stat`s:
+
+| Path | Should belong to |
+| --- | --- |
+| `/var/lib/headscale`, and the directories under it that hold the files below | the account the unit runs as |
+| `noise.private_key_path` (and a pre-0.23 top-level `private_key_path`) | the account the unit runs as |
+| `database.sqlite.path`, with its `-wal` and `-shm` files (not checked for postgres) | the account the unit runs as |
+| `/etc/headscale/oidc_client_secret`, which `O` writes | the account the unit runs as |
+| `/etc/headscale/config.yaml.bak`, which every write takes | whoever owns `config.yaml`: it holds the same content, so no more and no less readable |
+
+A path that does not exist yet is not a problem, and a unit that runs as root is never short of access, so only the backup is compared there. A mismatch shows next to the service state (`ownership ⚠ /var/lib/headscale/noise_private.key is root:root, want headscale:headscale — F fixes it`), and `F` previews the fix, one confirm per command:
+
+- every mismatch inside `/var/lib/headscale` is covered by **one** `chown -R <user>:<group> /var/lib/headscale`, because a root-run headscale leaves more behind than the files the check names, and the whole directory belongs to the service anyway;
+- a state file `config.yaml` puts anywhere else gets its own `chown <user>:<group> <file>`, never a recursive one: a database at `/srv/db.sqlite` must not turn into a `chown -R` of `/srv`;
+- the secret file and the backup get a plain `chown` each.
+
+The chain ends with the same restart (or enable) step as `S` and `O`, since a service that failed on these files needs one. `--check` reports the result as `ownershipChecked`, `ownershipOk` and `ownershipIssues` (path, role, current and wanted owner); an ownership that could not be read is reported as unchecked, never as fine.
 
 ### Node rename and delete (`m` / `x`)
 
@@ -130,17 +180,17 @@ tui-vpn --check
 
 Reads the interfaces and the control plane once and prints a summary as JSON: interface and peer counts, per-peer handshake ages, whether Headscale is present, user and node counts, and a `compat` block naming each backend's version.
 
-It also carries a `controlPlane` block read from `/etc/headscale/config.yaml`: `serviceState`, `oidcClientId`, the scope, whether a client secret is set, and the answers below. `oidcConfigured` now comes from that configuration rather than being guessed; the older guess — inferred from users carrying a provider and nodes registered through OIDC — stays as `oidcInferred`, which is the answer used on a host whose `config.yaml` cannot be read.
+It also carries a `controlPlane` block read from `/etc/headscale/config.yaml`: `serviceState` and `serviceEnabled` (what `systemctl is-active` and `is-enabled` answer for the unit), `serviceAccount`, the ownership check (`ownershipChecked`, `ownershipOk`, `ownershipIssues`), `oidcClientId`, the scope, whether a client secret is set, and the answers below. `oidcConfigured` now comes from that configuration rather than being guessed; the older guess — inferred from users carrying a provider and nodes registered through OIDC — stays as `oidcInferred`, which is the answer used on a host whose `config.yaml` cannot be read.
 
 Like `--report`, it carries **no key, no endpoint, no URL and no address of the host** — and the control-plane block is no exception. What an "OIDC does not work" report actually needs is the two ways the setup fails, not the URL that names your server, so:
 
 | Instead of | `--check` prints |
 | --- | --- |
-| `server_url` | `serverUrlSet`, `serverUrlHttps` and `serverUrlLoopback` — the two questions worth asking, as booleans |
+| `server_url` | `serverUrlSet`, `serverUrlHttps`, `serverUrlLoopback` and `serverUrlIsIp` — the questions worth asking, as booleans — and `transport` (`plain-http`, `letsencrypt`, `own-cert` or `reverse-proxy`) |
 | `listen_addr` | `listenPort` and `listenLoopback`, because a bind address can name an internal interface |
 | the OIDC issuer URL | `oidcIssuer`, reduced to the issuer's **host name** — which IdP, without the realm and path that describe your internal layout |
 
-The allow lists are counted rather than printed, because they name people, and the client secret has no field at all — only `oidcClientSecretSet`. `test/smoke.sh` asserts that no `://` survives anywhere in the output.
+`baseDomain` is printed as it is, like the issuer's host: it is the tailnet's own naming, and `baseDomainConflict` answers whether headscale would refuse to start over it. The allow lists are counted rather than printed, because they name people, and the client secret has no field at all — only `oidcClientSecretSet`. `test/smoke.sh` asserts that no `://` survives anywhere in the output.
 
 <!-- install:start -->
 <!-- Generated by tui-kit/tools/render-install.py from tool.json. -->
@@ -288,7 +338,7 @@ hidden; one below the minimum is marked as such and the tool still runs.
 | Binary | `wg` |
 | Version read with | `wg --version` |
 | Minimum | 1.0.20200513 |
-| Tested | none yet |
+| Tested | `1.0.20210914` |
 
 ### headscale
 
@@ -297,7 +347,7 @@ hidden; one below the minimum is marked as such and the tool still runs.
 | Binary | `headscale` |
 | Version read with | `headscale version` |
 | Minimum | 0.22.0 |
-| Tested | none yet |
+| Tested | `0.29.3` |
 
 | Versions | What changes |
 | --- | --- |

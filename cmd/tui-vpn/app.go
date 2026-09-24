@@ -41,9 +41,14 @@ const (
 	inputNewIfacePort
 	inputCreatePreAuthKey
 	inputRenameNode
-	// The server-settings form.
+	// The server-settings form, in the order the fields are asked for; the
+	// ACME and certificate steps only for the transports that need them.
 	inputServerURL
 	inputListenAddr
+	inputACMEEmail
+	inputTLSCertPath
+	inputTLSKeyPath
+	inputBaseDomain
 	// The OIDC form, in the order the fields are asked for.
 	inputOIDCIssuer
 	inputOIDCClientID
@@ -62,6 +67,9 @@ const (
 	pickerNone pickerPurpose = iota
 	pickerOIDCOnlyStart
 	pickerOIDCPKCE
+	// The server-settings form's two choices.
+	pickerTransport
+	pickerACMEChallenge
 )
 
 // pickerYes and pickerNo are the two options of a boolean picker.
@@ -234,6 +242,9 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case discoveredMsg:
 		return a, a.confirmOIDCChain(msg)
 
+	case tlsCheckedMsg:
+		return a, a.tookTLSCheck(msg)
+
 	case tea.KeyMsg:
 		return a.handleKey(msg)
 	}
@@ -363,6 +374,10 @@ func (a *app) handlePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case pickerOIDCPKCE:
 		a.cpDraft.pkce = choice == pickerYes
 		return a, a.discoverIssuer()
+	case pickerTransport:
+		return a, a.tookTransport(choice)
+	case pickerACMEChallenge:
+		return a, a.tookChallenge(choice)
 	}
 	return a, nil
 }
@@ -480,6 +495,8 @@ func (a *app) handleActionKey(key string) tea.Cmd {
 			return a.startServerSettings()
 		case "O":
 			return a.startOIDCSettings()
+		case "F":
+			return a.startFixOwnership()
 		}
 	case wireguard.ScreenNodes:
 		switch key {

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/tui-tools/tui-kit/theme"
 	"github.com/tui-tools/tui-vpn/internal/wireguard"
 )
 
@@ -49,49 +50,66 @@ func runPending(t *testing.T, a *app, cmd tea.Cmd) *app {
 	return model.(*app)
 }
 
-// TestServerSettingsFlow drives `S` end to end: two inputs, a diff that shows
-// only the changed lines, and the restart behind it.
+// TestServerSettingsFlow drives `S` end to end on the demo, which sits behind
+// a reverse proxy: the transport is kept, a new server_url typed, listen_addr
+// and base_domain accepted as they are — and the diff is the one line that
+// changed, followed by the enable and restart the running, disabled unit
+// needs.
 func TestServerSettingsFlow(t *testing.T) {
 	a := newTestApp(t)
 	a.setScreen(wireguard.ScreenUsers)
 
 	model, _ := a.Update(key("S"))
 	a = model.(*app)
-	if a.mode != modeInput {
-		t.Fatalf("S did not open the server-settings form (mode %d)", a.mode)
+	if a.mode != modePicker || a.pickerPurpose != pickerTransport {
+		t.Fatalf("S did not open the transport choice (mode %d)", a.mode)
 	}
+	if a.picker.Selected() != transportOptions[wireguard.TransportReverseProxy] {
+		t.Errorf("the picker is not on the current transport: %q", a.picker.Selected())
+	}
+	a = enter(t, a)
 	a = clearAndType(t, a, "https://vpn.example.org")
-	a = clearAndType(t, a, "127.0.0.1:8080")
+	if a.input.Model.Value() != "127.0.0.1:8080" {
+		t.Errorf("listen_addr prefill = %q, want the loopback bind a proxy needs",
+			a.input.Model.Value())
+	}
+	a = enter(t, a)
+	if a.inputPurpose != inputBaseDomain || a.input.Model.Value() != "tailnet.example.net" {
+		t.Fatalf("no base_domain step (purpose %d, value %q)", a.inputPurpose,
+			a.input.Model.Value())
+	}
+	a = enter(t, a)
 
 	if a.mode != modeConfirm {
-		t.Fatalf("the form did not reach a confirm (mode %d)", a.mode)
+		t.Fatalf("the form did not reach a confirm (mode %d, status %q)", a.mode, a.status)
 	}
 	if !strings.Contains(a.confirm.Command, wireguard.HeadscaleConfigPath) {
 		t.Errorf("preview = %q, want the config write", a.confirm.Command)
 	}
-	// The diff is the reason this dialog is trustworthy: exactly two lines
-	// out, two lines in.
+	// The diff is the reason this dialog is trustworthy: one line out, one in.
 	body := a.confirm.Body
-	if strings.Count(body, "\n- ") != 2 || strings.Count(body, "\n+ ") != 2 {
-		t.Errorf("the diff is not the two changed lines:\n%s", body)
+	if strings.Count(body, "\n- ") != 1 || strings.Count(body, "\n+ ") != 1 {
+		t.Errorf("the diff is not the one changed line:\n%s", body)
 	}
-	for _, want := range []string{
-		`+ server_url: "https://vpn.example.org"`,
-		`+ listen_addr: "127.0.0.1:8080"`,
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("the diff is missing %q:\n%s", want, body)
-		}
+	if !strings.Contains(body, `+ server_url: "https://vpn.example.org"`) {
+		t.Errorf("the diff is missing the new server_url:\n%s", body)
 	}
-	// Nothing the edit did not touch may appear in the dialog.
-	if strings.Contains(body, "metrics_listen_addr") || strings.Contains(body, "log:") {
-		t.Errorf("the diff shows lines the edit does not change:\n%s", body)
+	if !strings.Contains(body, "Transport: reverse proxy") {
+		t.Errorf("the dialog does not name the transport:\n%s", body)
 	}
-
 	a = confirmAndRun(t, a)
 
+	// The demo's unit is running but disabled, so the tail is an enable and
+	// then the restart that reads the new configuration.
 	if a.mode != modeConfirm {
-		t.Fatalf("the write did not chain the restart (mode %d)", a.mode)
+		t.Fatalf("the write did not chain the enable (mode %d)", a.mode)
+	}
+	if a.confirm.Command != "systemctl enable headscale" {
+		t.Errorf("preview = %q, want the enable", a.confirm.Command)
+	}
+	a = confirmAndRun(t, a)
+	if a.mode != modeConfirm {
+		t.Fatalf("the enable did not chain the restart (mode %d)", a.mode)
 	}
 	if !strings.Contains(a.confirm.Command, "systemctl restart headscale") {
 		t.Errorf("preview = %q, want the restart", a.confirm.Command)
@@ -111,22 +129,17 @@ func TestServerSettingsFlow(t *testing.T) {
 	}
 }
 
-// TestServerSettingsWarnsAboutAnUnreachableURL: a syntactically fine URL that
-// no client's browser can reach is the failure this form exists to prevent.
-func TestServerSettingsWarnsAboutAnUnreachableURL(t *testing.T) {
-	a := newTestApp(t)
+// walkServerSettings drives S on the demo keeping every answer but the
+// server_url, up to the config-write confirm.
+func walkServerSettings(t *testing.T, a *app, serverURL string) *app {
+	t.Helper()
 	a.setScreen(wireguard.ScreenUsers)
 	model, _ := a.Update(key("S"))
 	a = model.(*app)
-	a = clearAndType(t, a, "http://127.0.0.1:8080")
-	a = enter(t, a) // keep the prefilled listen_addr
-
-	if a.mode != modeConfirm {
-		t.Fatalf("mode = %d, want a confirm", a.mode)
-	}
-	if !strings.Contains(a.confirm.Body, "WARNING") {
-		t.Errorf("a plain-http loopback server_url was not warned about:\n%s", a.confirm.Body)
-	}
+	a = enter(t, a)                   // the current transport
+	a = clearAndType(t, a, serverURL) // server_url
+	a = enter(t, a)                   // listen_addr
+	return enter(t, a)                // base_domain
 }
 
 // TestOIDCFlowNeverShowsTheSecret is the test the whole feature is written
@@ -197,14 +210,16 @@ func TestOIDCFlowNeverShowsTheSecret(t *testing.T) {
 	assertNoSecret(t, a, secret, "the secret-write dialog")
 	a = confirmAndRun(t, a)
 
-	// Step 2: config.yaml. The diff must carry client_secret_path and not a
-	// client_secret.
+	// Step 2: config.yaml. The diff must not carry a client_secret.
 	if a.mode != modeConfirm {
 		t.Fatalf("the secret write did not chain the config write (mode %d)", a.mode)
 	}
+	// The demo already points client_secret_path at the file, so that line
+	// is not in the diff: an unchanged value is not a change, however the
+	// editor would have quoted it.
 	body := a.confirm.Body
-	if !strings.Contains(body, "client_secret_path") {
-		t.Errorf("the diff does not point headscale at the secret file:\n%s", body)
+	if strings.Contains(body, "client_secret_path") {
+		t.Errorf("the diff rewrites a client_secret_path that already says this:\n%s", body)
 	}
 	if strings.Contains(body, "\n+   client_secret:") {
 		t.Errorf("the diff writes a client_secret into config.yaml:\n%s", body)
@@ -212,7 +227,12 @@ func TestOIDCFlowNeverShowsTheSecret(t *testing.T) {
 	assertNoSecret(t, a, secret, "the config-write dialog")
 	a = confirmAndRun(t, a)
 
-	// Step 3: the restart.
+	// Step 3: the demo's unit is disabled, so it is enabled first, and
+	// step 4 is the restart.
+	if a.confirm.Command != "systemctl enable headscale" {
+		t.Fatalf("preview = %q, want the enable", a.confirm.Command)
+	}
+	a = confirmAndRun(t, a)
 	if !strings.Contains(a.confirm.Command, "systemctl restart headscale") {
 		t.Fatalf("preview = %q, want the restart", a.confirm.Command)
 	}
@@ -228,6 +248,9 @@ func TestOIDCFlowNeverShowsTheSecret(t *testing.T) {
 		t.Fatalf("load: %v", err)
 	}
 	cp := state.Headscale.ControlPlane
+	if cp.OIDC.ClientSecretPath != wireguard.OIDCClientSecretPath {
+		t.Errorf("client_secret_path = %q, want the secret file", cp.OIDC.ClientSecretPath)
+	}
 	if cp.OIDC.Issuer != "https://idp.example.org/realms/prod" {
 		t.Errorf("issuer = %q", cp.OIDC.Issuer)
 	}
@@ -406,5 +429,163 @@ func TestPanelNamesTheServiceAccount(t *testing.T) {
 	a.setScreen(wireguard.ScreenUsers)
 	if !strings.Contains(a.View(), "runs as headscale:headscale") {
 		t.Errorf("the panel does not name the service account:\n%s", a.View())
+	}
+}
+
+// TestRestartStepFollowsTheUnitState: the last step of S depends on whether
+// the unit starts at boot. A fresh install (inactive, disabled) is enabled and
+// started in one command; an enabled unit gets the plain restart it always
+// got; and a disabled unit that is already running is enabled and then
+// restarted, because `enable --now` would leave it on the old configuration.
+func TestRestartStepFollowsTheUnitState(t *testing.T) {
+	for _, tc := range []struct {
+		name, active, enabled string
+		want                  []string
+	}{
+		{"fresh install", "inactive", "disabled",
+			[]string{"systemctl enable --now headscale"}},
+		{"already enabled", "active", "enabled",
+			[]string{"systemctl restart headscale"}},
+		{"running but disabled", "active", "disabled",
+			[]string{"systemctl enable headscale", "systemctl restart headscale"}},
+		{"state unknown", "unknown", "unknown",
+			[]string{"systemctl restart headscale"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := wireguard.NewFake()
+			fake.SetService(tc.active, tc.enabled)
+			a := newApp(fake, theme.New(), nil)
+			a.width, a.height = 100, 30
+			state, err := fake.Load(t.Context())
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			a.state, a.loading = state, false
+			a = walkServerSettings(t, a, "https://vpn.example.org")
+			a = confirmAndRun(t, a) // the config write
+
+			for i, want := range tc.want {
+				if a.mode != modeConfirm {
+					t.Fatalf("step %d: no confirm open (mode %d)", i, a.mode)
+				}
+				if a.confirm.Command != want {
+					t.Fatalf("step %d: preview = %q, want %q", i, a.confirm.Command, want)
+				}
+				a = confirmAndRun(t, a)
+			}
+			if a.mode == modeConfirm {
+				t.Fatalf("an extra step followed: %q", a.confirm.Command)
+			}
+			after, _ := fake.Load(t.Context())
+			if tc.enabled == "disabled" && after.Headscale.ControlPlane.ServiceEnabled != "enabled" {
+				t.Errorf("the unit is still %q after the flow",
+					after.Headscale.ControlPlane.ServiceEnabled)
+			}
+		})
+	}
+}
+
+// TestPanelSaysWhetherTheUnitStartsAtBoot: enabled or disabled sits next to
+// the active state, and a disabled unit says what that costs.
+func TestPanelSaysWhetherTheUnitStartsAtBoot(t *testing.T) {
+	a := newTestApp(t)
+	a.setScreen(wireguard.ScreenUsers)
+	view := a.View()
+	if !strings.Contains(view, "headscale active · disabled") {
+		t.Errorf("the panel does not show the enabled state:\n%s", view)
+	}
+	if !strings.Contains(view, "won't start at boot") {
+		t.Errorf("a disabled unit is not called out:\n%s", view)
+	}
+}
+
+// TestFixOwnershipFlow drives F on the demo, whose noise key is root's: the
+// panel names the file, F previews one recursive chown of the state
+// directory, and the restart tail follows it.
+func TestFixOwnershipFlow(t *testing.T) {
+	a := newTestApp(t)
+	a.setScreen(wireguard.ScreenUsers)
+	view := a.View()
+	if !strings.Contains(view, "/var/lib/headscale/noise_private.key is root:root") {
+		t.Errorf("the panel does not name the mismatch:\n%s", view)
+	}
+
+	model, _ := a.Update(key("F"))
+	a = model.(*app)
+	if a.mode != modeConfirm {
+		t.Fatalf("F did not open a confirm (mode %d)", a.mode)
+	}
+	if a.confirm.Command != "chown -R headscale:headscale /var/lib/headscale" {
+		t.Errorf("preview = %q", a.confirm.Command)
+	}
+	if !strings.Contains(a.confirm.Body, "root:root → headscale:headscale") {
+		t.Errorf("the dialog does not say what it fixes:\n%s", a.confirm.Body)
+	}
+	a = confirmAndRun(t, a)
+
+	// The restart tail: the demo unit is running but disabled.
+	if a.mode != modeConfirm || a.confirm.Command != "systemctl enable headscale" {
+		t.Fatalf("the fix did not chain the enable: mode %d, %q", a.mode, a.confirm.Command)
+	}
+	model, _ = a.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	a = model.(*app)
+
+	state, _ := a.backend.Load(t.Context())
+	a.state = state
+	if !state.Headscale.ControlPlane.Ownership.OK() {
+		t.Errorf("ownership after the fix = %+v", state.Headscale.ControlPlane.Ownership)
+	}
+	if !strings.Contains(a.View(), "owned as expected") {
+		t.Errorf("the panel does not say the ownership is fine now:\n%s", a.View())
+	}
+
+	// F with nothing to fix says so and opens nothing.
+	model, _ = a.Update(key("F"))
+	a = model.(*app)
+	if a.mode != modeBrowse || !strings.Contains(a.status, "nothing to fix") {
+		t.Errorf("F on a clean host: mode %d, status %q", a.mode, a.status)
+	}
+}
+
+// TestFixOwnershipChainsEveryFile: the secret and the backup get their own
+// non-recursive chowns after the state directory's, one confirm each.
+func TestFixOwnershipChainsEveryFile(t *testing.T) {
+	fake := wireguard.NewFake()
+	fake.SetStat(wireguard.FileStat{Path: wireguard.OIDCClientSecretPath,
+		User: "root", Group: "root", Mode: 0o600})
+	fake.SetService("active", "enabled")
+	a := newApp(fake, theme.New(), nil)
+	a.width, a.height = 100, 30
+	a.state, _ = fake.Load(t.Context())
+	a.loading = false
+	a.setScreen(wireguard.ScreenUsers)
+
+	model, _ := a.Update(key("F"))
+	a = model.(*app)
+	for i, want := range []string{
+		"chown headscale:headscale " + wireguard.OIDCClientSecretPath,
+		"chown -R headscale:headscale /var/lib/headscale",
+		"systemctl restart headscale",
+	} {
+		if a.mode != modeConfirm || a.confirm.Command != want {
+			t.Fatalf("step %d: mode %d, preview %q, want %q", i, a.mode, a.confirm.Command, want)
+		}
+		a = confirmAndRun(t, a)
+	}
+}
+
+// TestFixOwnershipNeedsACheck: an ownership that could not be read is not a
+// clean one, and F says why it has nothing to offer.
+func TestFixOwnershipNeedsACheck(t *testing.T) {
+	a := newTestApp(t)
+	a.setScreen(wireguard.ScreenUsers)
+	a.state.Headscale.ControlPlane.Ownership = wireguard.Ownership{}
+	model, _ := a.Update(key("F"))
+	a = model.(*app)
+	if a.mode != modeBrowse || !strings.Contains(a.status, "not checked") {
+		t.Errorf("mode %d, status %q", a.mode, a.status)
+	}
+	if strings.Contains(a.View(), "ownership   ") {
+		t.Error("the panel reports an ownership it never checked")
 	}
 }

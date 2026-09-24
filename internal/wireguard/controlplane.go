@@ -67,8 +67,25 @@ type ControlPlane struct {
 	// overlap, which is a mistake worth catching in the form rather than in a
 	// failed restart.
 	BaseDomain string `json:"baseDomain,omitempty"`
+	// MagicDNS is dns.magic_dns, headscale's default true. With it on, a
+	// base domain is required.
+	MagicDNS bool `json:"magicDns"`
+	// The transport settings: Let's Encrypt's hostname, challenge and account
+	// email, and an own certificate's pair of files. Which of them is set is
+	// what DetectTransport reads.
+	TLSLetsEncryptHostname  string `json:"tlsLetsEncryptHostname,omitempty"`
+	TLSLetsEncryptChallenge string `json:"tlsLetsEncryptChallengeType,omitempty"`
+	ACMEEmail               string `json:"acmeEmail,omitempty"`
+	TLSCertPath             string `json:"tlsCertPath,omitempty"`
+	TLSKeyPath              string `json:"tlsKeyPath,omitempty"`
 	// ServiceState is what `systemctl is-active headscale` answered.
 	ServiceState string `json:"serviceState,omitempty"`
+	// ServiceEnabled is what `systemctl is-enabled headscale` answered. A
+	// freshly installed package leaves the unit disabled: a restart starts it
+	// now, and the control plane is gone after the next reboot. That is why
+	// the last step of a configuration flow enables a disabled unit instead
+	// of only restarting it.
+	ServiceEnabled string `json:"serviceEnabled,omitempty"`
 	// ServiceUser and ServiceGroup are the account the headscale unit runs as,
 	// read from the unit rather than assumed. They matter for exactly one
 	// thing: the client secret file has to be readable by that account. The
@@ -76,6 +93,16 @@ type ControlPlane struct {
 	// would leave the service unable to start.
 	ServiceUser  string `json:"serviceUser,omitempty"`
 	ServiceGroup string `json:"serviceGroup,omitempty"`
+	// NoisePrivateKeyPath, LegacyPrivateKeyPath and DatabasePath are the state
+	// files config.yaml names: headscale creates them on its first run, owned
+	// by whoever ran it, and needs to read (and, for the database, write) them
+	// as the account the unit runs as.
+	NoisePrivateKeyPath  string `json:"noisePrivateKeyPath,omitempty"`
+	LegacyPrivateKeyPath string `json:"legacyPrivateKeyPath,omitempty"`
+	DatabasePath         string `json:"databasePath,omitempty"`
+	// Ownership is whether those files, and the ones this tool writes, belong
+	// to the account that has to read them. See ownership.go.
+	Ownership Ownership `json:"ownership"`
 	// OIDC is the identity-provider section.
 	OIDC OIDCConfig `json:"oidc"`
 	// Raw is the file byte for byte, kept so an edit can be a minimal splice
@@ -119,7 +146,25 @@ func (o OIDCConfig) Configured() bool { return o.Issuer != "" && o.ClientID != "
 type headscaleConfigDoc struct {
 	ServerURL  string `yaml:"server_url"`
 	ListenAddr string `yaml:"listen_addr"`
-	DNS        struct {
+	// PrivateKeyPath is the pre-0.23 top-level key path; newer files only
+	// have noise.private_key_path.
+	PrivateKeyPath string `yaml:"private_key_path"`
+	Noise          struct {
+		PrivateKeyPath string `yaml:"private_key_path"`
+	} `yaml:"noise"`
+	Database struct {
+		Type   string `yaml:"type"`
+		Sqlite struct {
+			Path string `yaml:"path"`
+		} `yaml:"sqlite"`
+	} `yaml:"database"`
+	TLSLetsEncryptHostname  string `yaml:"tls_letsencrypt_hostname"`
+	TLSLetsEncryptChallenge string `yaml:"tls_letsencrypt_challenge_type"`
+	ACMEEmail               string `yaml:"acme_email"`
+	TLSCertPath             string `yaml:"tls_cert_path"`
+	TLSKeyPath              string `yaml:"tls_key_path"`
+	DNS                     struct {
+		MagicDNS   *bool  `yaml:"magic_dns"`
 		BaseDomain string `yaml:"base_domain"`
 	} `yaml:"dns"`
 	OIDC struct {
@@ -190,6 +235,23 @@ func ParseHeadscaleConfig(data []byte) (ControlPlane, error) {
 		ListenAddr: strings.TrimSpace(doc.ListenAddr),
 		BaseDomain: strings.TrimSpace(doc.DNS.BaseDomain),
 		Raw:        string(data),
+
+		// headscale's own default for magic_dns is true.
+		MagicDNS:                doc.DNS.MagicDNS == nil || *doc.DNS.MagicDNS,
+		TLSLetsEncryptHostname:  strings.TrimSpace(doc.TLSLetsEncryptHostname),
+		TLSLetsEncryptChallenge: strings.TrimSpace(doc.TLSLetsEncryptChallenge),
+		ACMEEmail:               strings.TrimSpace(doc.ACMEEmail),
+		TLSCertPath:             strings.TrimSpace(doc.TLSCertPath),
+		TLSKeyPath:              strings.TrimSpace(doc.TLSKeyPath),
+
+		NoisePrivateKeyPath:  strings.TrimSpace(doc.Noise.PrivateKeyPath),
+		LegacyPrivateKeyPath: strings.TrimSpace(doc.PrivateKeyPath),
+	}
+	// Only SQLite keeps its data in a file on this machine; postgres is some
+	// other server's business.
+	switch strings.ToLower(strings.TrimSpace(doc.Database.Type)) {
+	case "", "sqlite", "sqlite3":
+		cp.DatabasePath = strings.TrimSpace(doc.Database.Sqlite.Path)
 	}
 	o := doc.OIDC
 	cp.OIDC = OIDCConfig{
@@ -270,21 +332,49 @@ func ValidServerURL(s string) bool {
 	return s != "" && !strings.Contains(s, "\n") && serverURLPattern.MatchString(s)
 }
 
-// ServerURLWarning explains why a syntactically valid server_url will still not
-// work for an OIDC login, which happens in a browser on someone else's machine:
-// plain http is refused by most IdPs as a redirect target, and a loopback
-// address is not reachable from anywhere but the server itself.
-func ServerURLWarning(s string) string {
+// OIDCCallbackPath is where headscale receives the IdP's redirect after a
+// browser login.
+const OIDCCallbackPath = "/oidc/callback"
+
+// RedirectURI is the redirect URI an OAuth client for this control plane has
+// to be registered with at the IdP: server_url plus headscale's callback
+// path. It is empty when there is no server_url to build it from.
+func RedirectURI(serverURL string) string {
+	serverURL = strings.TrimSpace(serverURL)
+	if serverURL == "" {
+		return ""
+	}
+	return strings.TrimRight(serverURL, "/") + OIDCCallbackPath
+}
+
+// ServerURLWarning explains why a syntactically valid server_url will still
+// not work. A loopback host is unreachable from every client, whatever the
+// transport. Plain http, and a raw IP address, are NOT problems in themselves:
+// the control protocol runs over Noise, so clients' traffic to the control
+// plane is encrypted and authenticated either way. They become one only when
+// OIDC is configured, because the login happens in a browser redirected to
+// RedirectURI, and Google and most other IdPs refuse a redirect URI that is
+// plain http or names a raw IP.
+func ServerURLWarning(s string, oidcConfigured bool) string {
+	host := URLHost(s)
 	switch {
 	case s == "":
 		return ""
-	case strings.HasPrefix(s, "http://"):
-		return "server_url is plain http: most IdPs refuse an http redirect URI, and clients " +
-			"will send their traffic in the clear. Use https (tui-cert issues the certificate)."
-	case strings.Contains(s, "127.0.0.1") || strings.Contains(s, "localhost") ||
-		strings.Contains(s, "[::1]"):
-		return "server_url points at loopback: a client's browser cannot reach it, so the OIDC " +
-			"redirect will fail. Use the name clients actually resolve."
+	case IsLoopbackHost(host):
+		return "server_url points at loopback: no client can reach it, and an OIDC " +
+			"redirect would fail. Use the address or name clients actually reach."
+	case !oidcConfigured:
+		return ""
+	case strings.HasPrefix(strings.ToLower(s), "http://"):
+		return "server_url is plain http while OIDC is configured: browser logins will " +
+			"fail, because Google and most IdPs refuse the http redirect URI " +
+			RedirectURI(s) + ". Clients themselves are fine (the control channel is " +
+			"Noise-encrypted); only the login needs https on a DNS name — Let's Encrypt " +
+			"or own certificate with S."
+	case IsIPHost(host):
+		return "server_url names a raw IP while OIDC is configured: browser logins will " +
+			"fail, because Google and most IdPs refuse a redirect URI on an IP address (" +
+			RedirectURI(s) + "). Give the server a DNS name for https."
 	}
 	return ""
 }
@@ -424,6 +514,11 @@ func ValidClientSecret(s string) bool {
 type ConfigEdit struct {
 	Path  []string
 	Value string
+	// ClearOnly marks an edit that empties a key left behind by another
+	// setting: it applies where the key is already in the file, and is a
+	// no-op where it is not, so clearing never adds lines to a file that had
+	// nothing to clear.
+	ClearOnly bool
 }
 
 // ConfigChange is one contiguous run of lines an edit replaced, kept so the
@@ -505,6 +600,9 @@ func planEdit(lines []string, root *yaml.Node, edit ConfigEdit) (*splice, bool, 
 	for i := 0; i < len(edit.Path)-1; i++ {
 		value, _, ok := mapEntry(parent, edit.Path[i])
 		if !ok || value.Kind != yaml.MappingNode || value.Style != 0 {
+			if edit.ClearOnly {
+				return nil, true, nil // nothing there to clear
+			}
 			// The section is missing, empty, or written in flow style; either
 			// way there is nothing to splice into.
 			return nil, false, nil
@@ -522,14 +620,40 @@ func planEdit(lines []string, root *yaml.Node, edit ConfigEdit) (*splice, bool, 
 		if len(lines) > start && lines[start] == replacement && end == start+1 {
 			return nil, true, nil // already exactly this, no change
 		}
+		if end == start+1 && sameScalar(value, edit.Value) {
+			// Already this value, written another way (unquoted where the
+			// edit would quote it): rewriting it would be a line of diff that
+			// changes nothing headscale reads.
+			return nil, true, nil
+		}
 		return &splice{start: start, end: end, lines: []string{replacement}}, true, nil
 	}
 
+	if edit.ClearOnly {
+		return nil, true, nil // nothing there to clear
+	}
 	// The key is new but its section exists: insert it right below the
 	// section's own line, at the indentation its siblings use.
 	at, indent := insertPointIn(lines, parent)
 	return &splice{start: at, end: at,
 		lines: []string{indent + key + ": " + edit.Value}}, true, nil
+}
+
+// sameScalar reports whether an existing scalar node already holds the value
+// a rendered edit would write: the same text with the same resolved type, so
+// `true` and `"true"` differ while `127.0.0.1:8080` and `"127.0.0.1:8080"` do
+// not.
+func sameScalar(existing *yaml.Node, rendered string) bool {
+	if existing == nil || existing.Kind != yaml.ScalarNode {
+		return false
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(rendered), &doc); err != nil || len(doc.Content) != 1 {
+		return false
+	}
+	want := doc.Content[0]
+	return want.Kind == yaml.ScalarNode && want.Value == existing.Value &&
+		want.ShortTag() == existing.ShortTag()
 }
 
 // mapEntry finds a key in a mapping node, returning its value node and its key
@@ -840,10 +964,10 @@ func BuildWriteHeadscaleConfig(content string) (runner.Command, error) {
 // readable by anyone it should not be — and no second previewed step either.
 //
 // The owner is the account the headscale unit actually runs as, read from the
-// unit rather than assumed. A root-only file works on the deb, whose unit runs
-// as root, and breaks the Arch package, whose unit runs headscale as its own
-// user: the service would come back from the restart unable to read its own
-// secret. Mode stays 600 in both cases, so the file is readable by exactly one
+// unit rather than assumed. A root-only file works for a unit that runs as
+// root, and breaks the packaged ones (headscale's own .deb, the Arch
+// package), which run headscale as its own user: the service would come back
+// from the restart unable to read its own secret. Mode stays 600 in both cases, so the file is readable by exactly one
 // account and no other.
 func BuildWriteOIDCClientSecret(secret, user, group string) (runner.Command, error) {
 	if !ValidClientSecret(secret) {
@@ -878,6 +1002,33 @@ func BuildRestartHeadscale() (runner.Command, error) {
 		Argv:        []string{"systemctl", "restart", HeadscaleService},
 		Description: "Restart " + HeadscaleService,
 		Destructive: true,
+	}, nil
+}
+
+// ServiceNeedsEnable reports whether a unit in this is-enabled state has to be
+// enabled for the control plane to survive a reboot. Only "disabled" does:
+// "enabled", "static", "indirect" and the rest already have their own way to
+// start, "masked" refuses any enable, and an answer that could not be read is
+// not a reason to change anything.
+func ServiceNeedsEnable(enabled string) bool { return enabled == "disabled" }
+
+// BuildEnableHeadscale assembles the enable a disabled unit needs. With now,
+// it is `systemctl enable --now`, which also starts a unit that is not
+// running: the whole last step of a configuration flow on a fresh install.
+// Without it, it is a plain enable, for a unit that is already running and
+// still needs the restart to read the new configuration — `enable --now`
+// leaves a running unit alone, so it would never apply the change.
+func BuildEnableHeadscale(now bool) (runner.Command, error) {
+	if now {
+		return runner.Command{
+			Argv:        []string{"systemctl", "enable", "--now", HeadscaleService},
+			Description: "Enable and start " + HeadscaleService,
+			Destructive: true,
+		}, nil
+	}
+	return runner.Command{
+		Argv:        []string{"systemctl", "enable", HeadscaleService},
+		Description: "Enable " + HeadscaleService + " at boot",
 	}, nil
 }
 
