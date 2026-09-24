@@ -47,8 +47,11 @@ func defaults() map[string]string {
 
 // options holds the parsed command line.
 type options struct {
-	demo        bool
-	check       bool
+	demo  bool
+	check bool
+	// probeIssuer adds the OIDC issuer's reachability to --check, the one
+	// network request it can make, and only when asked.
+	probeIssuer bool
 	report      bool
 	themePath   string
 	sudo        string
@@ -68,6 +71,9 @@ func parseFlags(args []string, out *os.File) (options, error) {
 	fs.BoolVar(&opts.check, "check", false,
 		"read the interfaces and the control plane once, print the summary as JSON and exit "+
 			"(no UI, nothing is changed, no keys or endpoints of this host)")
+	fs.BoolVar(&opts.probeIssuer, "probe-issuer", false,
+		"with --check: fetch the OIDC issuer's discovery document from this machine and "+
+			"report whether it answered (the only network request --check makes)")
 	fs.BoolVar(&opts.report, "report", false, reportUsage)
 	fs.StringVar(&opts.themePath, "theme", "",
 		"path to an Omarchy-style colors.toml (overrides the config file)")
@@ -151,7 +157,8 @@ func run(args []string) error {
 	// --check is the other non-interactive path: it reads once and prints, and
 	// never starts a terminal program.
 	if opts.check {
-		return runCheck(context.Background(), backend, backendCompat, os.Stdout)
+		return runCheckWith(context.Background(), backend, backendCompat, os.Stdout,
+			checkOptions{probeIssuer: opts.probeIssuer})
 	}
 
 	program := tea.NewProgram(newApp(backend, theme.New(), backendCompat),

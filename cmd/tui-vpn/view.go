@@ -116,15 +116,23 @@ func (a *app) controlPlanePanel() []string {
 	if own := ownershipLine(cp); own != "" {
 		lines = append(lines, own)
 	}
-	return append(lines,
+	lines = append(lines,
 		server,
 		"  transport   "+wireguard.TransportNote(cp),
 		"  redirect    "+redirectLine(cp),
 		"  oidc        issuer "+orDash(oidc.Issuer)+
 			" · client_id "+orDash(oidc.ClientID)+" · "+secretState(oidc),
 		"  allowed     domains "+listOrDash(oidc.AllowedDomains)+
-			" · groups "+listOrDash(oidc.AllowedGroups)+
-			" · users "+listOrDash(oidc.AllowedUsers),
+			" AND groups "+listOrDash(oidc.AllowedGroups)+
+			" AND users "+listOrDash(oidc.AllowedUsers)+
+			" — a login must match every list that is not empty",
+	)
+	// The allow-list mistakes headscale makes silently, at the login: a
+	// groups list the IdP never satisfies, users the domains refuse.
+	for _, w := range wireguard.OIDCWarnings(oidc) {
+		lines = append(lines, "  ⚠           "+w)
+	}
+	return append(lines,
 		"  scope       "+listOrDash(oidc.Scope)+
 			" · pkce "+onOff(oidc.PKCE)+
 			" · only_start_if_oidc_is_available "+yesNo(oidc.OnlyStartIfAvailable),
@@ -146,7 +154,7 @@ func redirectLine(cp wireguard.ControlPlane) string {
 	case wireguard.IsIPHost(host):
 		return uri + " — most IdPs (Google included) refuse a redirect on an IP"
 	}
-	return uri + " — register it with the IdP"
+	return uri + " — register it as the OAuth client's redirect URI"
 }
 
 // ownershipLine says whether headscale can read its own files. A mismatch is
@@ -673,8 +681,9 @@ func helpKeys() []ui.KeyHint {
 		{Key: "", Desc: "Encrypt, own certificate, reverse proxy), server_url,"},
 		{Key: "", Desc: "listen_addr and dns.base_domain, then a restart (or an"},
 		{Key: "", Desc: "enable, when the unit is disabled)"},
-		{Key: "O", Desc: "identity provider (users): issuer, client id, secret,"},
-		{Key: "", Desc: "allow lists, scope, pkce — then a restart"},
+		{Key: "O", Desc: "identity provider (users): Google or generic OIDC, then"},
+		{Key: "", Desc: "issuer, client id, secret, allow lists (all non-empty"},
+		{Key: "", Desc: "lists must match), scope, pkce — then a restart"},
 		{Key: "F", Desc: "fix ownership (users): chown headscale's state files, and"},
 		{Key: "", Desc: "the secret and backup this tool writes, to who needs them"},
 		{Key: "", Desc: ""},

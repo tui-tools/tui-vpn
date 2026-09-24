@@ -121,6 +121,17 @@ A disabled unit is the trap: a restart brings the control plane up now, and it i
 
 `O` on the users screen configures the whole `oidc:` section: issuer URL, client id, client secret, allowed domains, allowed groups, allowed users, scope (`openid profile email` by default), `only_start_if_oidc_is_available` and `pkce.enabled`.
 
+**It starts with the provider.** The first step is a picker:
+
+| Provider | What the preset does |
+| --- | --- |
+| **Google** | Fills the issuer (`https://accounts.google.com`) and the default scope, and **skips the groups step, emptying `allowed_groups`**: Google's ID token carries no groups claim, so any group there would make headscale refuse every login, the listed users included. `allowed_domains` (your Workspace domain) or `allowed_users` is the gate. It refuses to start when `server_url` is plain http or an IP address, because Google refuses such a redirect URI. |
+| **generic OIDC** | Asks for the issuer (Keycloak, Authentik and the rest fit here). An issuer typed here that belongs to a preset, such as Google's, gets that preset's rules. |
+
+**The redirect URI is in the dialog.** The client id step says `Register <server_url>/oidc/callback as the OAuth client's redirect URI`, which is the one value the OAuth client has to be created with, and warns when an IdP would refuse it.
+
+**The allow lists are combined with AND.** headscale lets a login in only when it matches every list that is not empty: with `allowed_domains: [example.com]`, an address from another domain is refused even when `allowed_users` names it (`unauthorised domain` on `/oidc/callback`). The dialog says so on each list, warns when an `allowed_users` entry has a domain `allowed_domains` would refuse, and warns when all three are empty (anyone the IdP authenticates gets in). The panel flags both mistakes in a configuration it did not write: a user outside the domains, and `allowed_groups` set for an IdP that sends no groups claim.
+
 **What is written where.** Two files, and only two:
 
 | File | What lands in it | Mode |
@@ -193,6 +204,8 @@ Like `--report`, it carries **no key, no endpoint, no URL and no address of the 
 | `server_url` | `serverUrlSet`, `serverUrlHttps`, `serverUrlLoopback` and `serverUrlIsIp` — the questions worth asking, as booleans — and `transport` (`plain-http`, `letsencrypt`, `own-cert` or `reverse-proxy`) |
 | `listen_addr` | `listenPort` and `listenLoopback`, because a bind address can name an internal interface |
 | the OIDC issuer URL | `oidcIssuer`, reduced to the issuer's **host name** — which IdP, without the realm and path that describe your internal layout |
+
+When OIDC is configured, `oidcReadiness` answers whether a browser login can work: `redirectHttps` (https on a DNS name, not loopback), `allowListsNonEmpty`, `groupsWithNoGroupsIdp` (the Google case above) and `usersOutsideDomains` (a count, not the addresses). `issuerReachable` is in it only with `--check --probe-issuer`, which fetches the issuer's discovery document from this machine the way `O` does; a plain `--check` never goes on the network.
 
 `baseDomain` is printed as it is, like the issuer's host: it is the tailnet's own naming, and `baseDomainConflict` answers whether headscale would refuse to start over it. The allow lists are counted rather than printed, because they name people, and the client secret has no field at all — only `oidcClientSecretSet`. `test/smoke.sh` asserts that no `://` survives anywhere in the output.
 

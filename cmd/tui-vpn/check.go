@@ -163,11 +163,30 @@ type cpSummary struct {
 	Scope          []string `json:"scope,omitempty"`
 	OnlyStart      bool     `json:"onlyStartIfOidcIsAvailable"`
 	PKCE           bool     `json:"pkce"`
+	// OIDCReadiness answers "will a browser login work" as facts: the
+	// redirect URI's shape, whether any allow list restricts access, and the
+	// two allow-list mistakes headscale makes silently. It is present when
+	// OIDC is configured. issuerReachable is only in it with --probe-issuer:
+	// a plain --check never goes on the network.
+	OIDCReadiness *wireguard.OIDCReadiness `json:"oidcReadiness,omitempty"`
+}
+
+// checkOptions are the --check switches beyond the plain read.
+type checkOptions struct {
+	// probeIssuer asks for the issuer's discovery document to be fetched
+	// from this machine, the one network request --check can make.
+	probeIssuer bool
 }
 
 // runCheck reads the state once and prints the reduced summary as JSON.
 func runCheck(ctx context.Context, backend wireguard.Backend,
 	backends []compat.Result, out io.Writer) error {
+	return runCheckWith(ctx, backend, backends, out, checkOptions{})
+}
+
+// runCheckWith is runCheck with the optional switches.
+func runCheckWith(ctx context.Context, backend wireguard.Backend,
+	backends []compat.Result, out io.Writer, opts checkOptions) error {
 	ctx, cancel := context.WithTimeout(ctx, checkTimeout)
 	defer cancel()
 
@@ -184,6 +203,11 @@ func runCheck(ctx context.Context, backend wireguard.Backend,
 		WireGuard: summariseWG(state),
 		Headscale: summariseHS(state.Headscale),
 		Compat:    backends,
+	}
+	if readiness := report.Headscale.ControlPlane.OIDCReadiness; readiness != nil &&
+		opts.probeIssuer {
+		reachable := probeIssuer(ctx, backend, state.Headscale.ControlPlane.OIDC.Issuer)
+		readiness.IssuerReachable = &reachable
 	}
 
 	encoder := json.NewEncoder(out)
@@ -264,6 +288,10 @@ func summariseHS(hs wireguard.Headscale) hsSummary {
 		Nodes:       len(hs.Nodes),
 		PreAuthKeys: len(hs.PreAuthKeys),
 	}
+	if cp.Readable && cp.OIDC.Configured() {
+		readiness := wireguard.ReadinessOf(cp)
+		summary.ControlPlane.OIDCReadiness = &readiness
+	}
 	for _, node := range hs.Nodes {
 		if node.Online {
 			summary.NodesOnline++
@@ -273,6 +301,18 @@ func summariseHS(hs wireguard.Headscale) hsSummary {
 		}
 	}
 	return summary
+}
+
+// probeIssuer fetches the issuer's discovery document from this machine, the
+// same read O makes before saving, and reports whether it answered like an
+// OpenID Provider.
+func probeIssuer(ctx context.Context, backend wireguard.Backend, issuer string) bool {
+	cmd, err := wireguard.BuildDiscoverIssuer(issuer)
+	if err != nil {
+		return false
+	}
+	out, err := backend.Run(ctx, cmd)
+	return err == nil && wireguard.DiscoveryLooksValid(out)
 }
 
 // handshakeAge is seconds since a handshake, or -1 when there has never been

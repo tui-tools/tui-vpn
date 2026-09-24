@@ -63,7 +63,7 @@
     },
     {
       "key": "S / O",
-      "action": "Control plane (users screen): server settings and transport / identity provider (OIDC)"
+      "action": "Control plane (users screen): server and transport / OIDC provider (Google, generic)"
     },
     {
       "key": "F",
@@ -175,7 +175,7 @@
     "preview_before_run": true,
     "no_daemon": true,
     "no_network": false,
-    "no_network_note": "One outbound request, on demand only: when you configure an identity provider it fetches the issuer's public /.well-known/openid-configuration with curl, to check the URL before saving it. Read-only, unprivileged, and a failure is a warning, not a refusal. Nothing else leaves the machine.",
+    "no_network_note": "On demand only: configuring an identity provider (or --check --probe-issuer) fetches the issuer's public /.well-known/openid-configuration with curl to check the URL. Read-only, unprivileged; a failure is a warning, not a refusal. Nothing else leaves the machine.",
     "static_binary": true,
     "signed_releases": false,
     "config_paths": [

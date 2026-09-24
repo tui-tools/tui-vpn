@@ -70,6 +70,8 @@ const (
 	// The server-settings form's two choices.
 	pickerTransport
 	pickerACMEChallenge
+	// The OIDC form's first step: which identity provider.
+	pickerOIDCProvider
 )
 
 // pickerYes and pickerNo are the two options of a boolean picker.
@@ -378,6 +380,8 @@ func (a *app) handlePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, a.tookTransport(choice)
 	case pickerACMEChallenge:
 		return a, a.tookChallenge(choice)
+	case pickerOIDCProvider:
+		return a, a.tookOIDCProvider(choice)
 	}
 	return a, nil
 }

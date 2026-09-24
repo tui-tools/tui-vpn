@@ -154,6 +154,8 @@ func TestOIDCFlowNeverShowsTheSecret(t *testing.T) {
 
 	model, _ := a.Update(key("O"))
 	a = model.(*app)
+	// The provider picker opens on the demo's own, a generic OIDC issuer.
+	a = pick(t, a, wireguard.ProviderGeneric.Label)
 	if a.mode != modeInput {
 		t.Fatalf("O did not open the OIDC form (mode %d)", a.mode)
 	}
@@ -305,6 +307,7 @@ func TestOIDCFlowKeepsAnExistingSecret(t *testing.T) {
 
 	model, _ := a.Update(key("O"))
 	a = model.(*app)
+	a = enter(t, a)                                        // provider, preselected
 	a = enter(t, a)                                        // issuer, prefilled
 	a = enter(t, a)                                        // client id, prefilled
 	a = enter(t, a)                                        // client secret, left empty
@@ -364,6 +367,7 @@ func TestCancellingTheOIDCFormForgetsTheSecret(t *testing.T) {
 	a.setScreen(wireguard.ScreenUsers)
 	model, _ := a.Update(key("O"))
 	a = model.(*app)
+	a = enter(t, a) // provider
 	a = enter(t, a) // issuer
 	a = enter(t, a) // client id
 	a = clearAndType(t, a, "a-secret-that-must-not-linger")

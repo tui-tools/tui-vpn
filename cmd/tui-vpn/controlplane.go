@@ -35,6 +35,8 @@ type controlPlaneDraft struct {
 	certPath, keyPath     string
 	baseDomain            string
 
+	// provider is the identity-provider preset O started from.
+	provider                      wireguard.OIDCProvider
 	issuer, clientID              string
 	domains, groups, users, scope []string
 	onlyStart, pkce               bool
@@ -81,7 +83,10 @@ type discoveredMsg struct {
 
 // --- the OIDC form (O) ------------------------------------------------------
 
-// startOIDCSettings opens the first step of the identity-provider form.
+// startOIDCSettings opens the first step of the identity-provider form: which
+// provider. A preset fills in what it knows (Google's issuer and scope) and
+// skips the steps that can only go wrong for it (allowed_groups, for an IdP
+// that sends no groups claim).
 func (a *app) startOIDCSettings() tea.Cmd {
 	if !a.controlPlaneEditable() {
 		return nil
@@ -91,12 +96,40 @@ func (a *app) startOIDCSettings() tea.Cmd {
 		onlyStart: oidc.OnlyStartIfAvailable,
 		pkce:      oidc.PKCE,
 	}
-	a.openInput(inputOIDCIssuer, "Identity provider — issuer URL",
-		"https://idp.example.com/realms/main", oidc.Issuer,
-		"The IdP's issuer URL — the one its discovery document is served under. "+
-			"tui-vpn reads "+wireguard.OIDCDiscoveryPath+" from it before saving, from this "+
-			"machine, because this machine is the one that will have to reach the IdP.")
+	options := make([]string, 0, len(wireguard.OIDCProviders()))
+	for _, p := range wireguard.OIDCProviders() {
+		options = append(options, p.Label)
+	}
+	current := wireguard.ProviderForIssuer(oidc.Issuer)
+	a.picker = ui.NewPicker("Identity provider — which one", options, current.Label)
+	a.pickerPurpose = pickerOIDCProvider
+	a.mode = modePicker
 	return nil
+}
+
+// tookOIDCProvider records the preset and opens its first step: the issuer
+// for a generic provider, the client id for one whose issuer is fixed.
+func (a *app) tookOIDCProvider(choice string) tea.Cmd {
+	provider := wireguard.ProviderGeneric
+	for _, p := range wireguard.OIDCProviders() {
+		if p.Label == choice {
+			provider = p
+		}
+	}
+	a.cpDraft.provider = provider
+	if provider.Issuer == "" {
+		issuer := a.state.Headscale.ControlPlane.OIDC.Issuer
+		if wireguard.ProviderForIssuer(issuer).ID != provider.ID {
+			issuer = ""
+		}
+		a.openInput(inputOIDCIssuer, "Identity provider — issuer URL",
+			"https://idp.example.com/realms/main", issuer,
+			"The IdP's issuer URL — the one its discovery document is served under. "+
+				"tui-vpn reads "+wireguard.OIDCDiscoveryPath+" from it before saving, from this "+
+				"machine, because this machine is the one that will have to reach the IdP.")
+		return nil
+	}
+	return a.tookOIDCIssuer(provider.Issuer)
 }
 
 // tookOIDCIssuer validates the issuer and asks for the client id.
@@ -107,11 +140,49 @@ func (a *app) tookOIDCIssuer(value string) tea.Cmd {
 		a.setStatus(ui.StatusError, "not a valid issuer URL: "+problem)
 		return nil
 	}
+	// An issuer typed into the generic flow that belongs to a preset gets
+	// that preset's rules: Google's issuer, typed by hand, still sends no
+	// groups claim.
+	if a.cpDraft.provider.ID == "" || a.cpDraft.provider.ID == wireguard.ProviderGeneric.ID {
+		if preset := wireguard.ProviderForIssuer(value); preset.ID != wireguard.ProviderGeneric.ID {
+			a.cpDraft.provider = preset
+			a.setStatusf(ui.StatusInfo, "%s is %s: its preset's rules apply", value,
+				strings.SplitN(preset.Label, " ", 2)[0])
+		}
+	}
+	// An IdP that refuses a plain-http or raw-IP redirect URI cannot log
+	// anybody in on such a server_url: say so now, not after the restart.
+	if !a.cpDraft.provider.GroupsClaim && a.cpDraft.provider.Issuer != "" {
+		serverURL := a.state.Headscale.ControlPlane.ServerURL
+		if problem := wireguard.RedirectProblem(serverURL); problem != "" {
+			a.cpDraft.provider = wireguard.OIDCProvider{}
+			a.setStatus(ui.StatusError, "Google refuses this server's redirect: "+problem+
+				". It accepts only https on a DNS name — set that up with S first")
+			return nil
+		}
+	}
 	a.cpDraft.issuer = value
 	a.openInput(inputOIDCClientID, "Identity provider — client id",
 		"headscale", a.state.Headscale.ControlPlane.OIDC.ClientID,
-		"The OAuth client the IdP issued for headscale.")
+		"The OAuth client the IdP issued for headscale. "+a.cpDraft.provider.Console+
+			"\n\n"+a.redirectHelp())
 	return nil
+}
+
+// redirectHelp is the redirect URI to register with the OAuth client, shown
+// in the dialog itself: the one value an operator otherwise has to work out
+// and type into the IdP's console by hand.
+func (a *app) redirectHelp() string {
+	serverURL := a.state.Headscale.ControlPlane.ServerURL
+	uri := wireguard.RedirectURI(serverURL)
+	if uri == "" {
+		return "No server_url is set yet, so there is no redirect URI to register: run S first."
+	}
+	help := "Register " + uri + " as the OAuth client's redirect URI."
+	if problem := wireguard.RedirectProblem(serverURL); problem != "" {
+		help += " WARNING: " + problem + ", which Google and most IdPs refuse."
+	}
+	return help
 }
 
 // tookOIDCClientID validates the client id and asks for the secret.
@@ -149,36 +220,67 @@ func (a *app) tookOIDCSecret(value string) tea.Cmd {
 			"a client secret is required: there is none set to keep")
 		return nil
 	}
+	help := "Only users whose email domain is on this list may log in. Empty means no " +
+		"domain rule. " + wireguard.AllowListsRule
+	if !a.cpDraft.provider.GroupsClaim {
+		help = "Your Google Workspace domain: only its accounts may log in. Empty means no " +
+			"domain rule, and then allowed_users has to name who gets in. " +
+			wireguard.AllowListsRule
+	}
 	a.openInput(inputOIDCDomains, "Identity provider — allowed domains",
 		"example.com, partner.example", strings.Join(
-			a.state.Headscale.ControlPlane.OIDC.AllowedDomains, ", "),
-		"Only users whose email domain is on this list may log in. Empty means the IdP's "+
-			"own decision is the only gate.")
+			a.state.Headscale.ControlPlane.OIDC.AllowedDomains, ", "), help)
 	return nil
 }
 
-// tookOIDCDomains records the domains and asks for the groups.
+// tookOIDCDomains records the domains and asks for the groups — or, for an
+// IdP that sends no groups claim, clears them and goes on to the users.
 func (a *app) tookOIDCDomains(value string) tea.Cmd {
 	a.cpDraft.domains = wireguard.SplitList(value)
+	if !a.cpDraft.provider.GroupsClaim {
+		// Any group here would refuse every login: the IdP never claims one.
+		a.cpDraft.groups = nil
+		return a.askOIDCUsers()
+	}
 	a.openInput(inputOIDCGroups, "Identity provider — allowed groups",
 		"vpn-users", strings.Join(a.state.Headscale.ControlPlane.OIDC.AllowedGroups, ", "),
-		"Groups the IdP must claim for a user. Empty means no group is required.")
+		"Groups the IdP must claim for a user. Empty means no group is required. Only "+
+			"set this when your IdP puts a groups claim in its ID token: without one, any "+
+			"group here refuses every login. "+wireguard.AllowListsRule)
 	return nil
 }
 
 // tookOIDCGroups records the groups and asks for the users.
 func (a *app) tookOIDCGroups(value string) tea.Cmd {
 	a.cpDraft.groups = wireguard.SplitList(value)
+	return a.askOIDCUsers()
+}
+
+// askOIDCUsers opens the allowed-users step.
+func (a *app) askOIDCUsers() tea.Cmd {
 	a.openInput(inputOIDCUsers, "Identity provider — allowed users",
 		"ana@example.com", strings.Join(a.state.Headscale.ControlPlane.OIDC.AllowedUsers, ", "),
-		"An explicit allow list of individual users. Empty means the domains and groups "+
-			"above are the whole rule.")
+		"An allow list of individual addresses. Empty means no per-user rule. It is not "+
+			"an exception to the domains: "+wireguard.AllowListsRule+" A user outside "+
+			"allowed_domains is refused even when listed here.")
 	return nil
 }
 
-// tookOIDCUsers records the users and asks for the scope.
+// tookOIDCUsers records the users and asks for the scope — or, for a preset
+// whose scope is fixed, goes straight to the switches. A listed user whose
+// domain allowed_domains refuses is warned about, not refused: it is a
+// mistake headscale makes silently, at the login.
 func (a *app) tookOIDCUsers(value string) tea.Cmd {
 	a.cpDraft.users = wireguard.SplitList(value)
+	if outside := wireguard.UsersOutsideDomains(a.cpDraft.users, a.cpDraft.domains); len(outside) > 0 {
+		a.setStatusf(ui.StatusWarn, "headscale will refuse %s: not in allowed_domains",
+			strings.Join(outside, ", "))
+	}
+	if a.cpDraft.provider.Issuer != "" {
+		a.cpDraft.scope = wireguard.SplitList(wireguard.DefaultOIDCScope)
+		a.openPicker(pickerOIDCOnlyStart, "only_start_if_oidc_is_available", a.cpDraft.onlyStart)
+		return nil
+	}
 	scope := strings.Join(a.state.Headscale.ControlPlane.OIDC.Scope, " ")
 	if scope == "" {
 		scope = wireguard.DefaultOIDCScope
@@ -267,6 +369,7 @@ func (a *app) confirmOIDCChain(msg discoveredMsg) tea.Cmd {
 			msg.detail + "\nSaving anyway is fine; logins will fail until the IdP is " +
 			"reachable from here."
 	}
+	discovery = a.oidcIntro() + "\n\n" + discovery
 
 	// The count includes the tail: the restart, or the enable and the
 	// restart a running but disabled unit needs.
@@ -300,6 +403,28 @@ func (a *app) confirmOIDCChain(msg discoveredMsg) tea.Cmd {
 		a.cpDraft.forgetSecret()
 	}
 	return cmd
+}
+
+// oidcIntro is the top of the OIDC confirm chain: the provider and what gates
+// access with it, the redirect URI to register, the AND rule of the allow
+// lists, and the allow-list mistakes headscale would make silently.
+func (a *app) oidcIntro() string {
+	provider := a.cpDraft.provider
+	if provider.ID == "" {
+		provider = wireguard.ProviderForIssuer(a.cpDraft.issuer)
+	}
+	lines := []string{"Provider: " + strings.SplitN(provider.Label, " — ", 2)[0] + ". " +
+		provider.Gate, a.redirectHelp(), wireguard.AllowListsRule}
+	draft := wireguard.OIDCConfig{Issuer: a.cpDraft.issuer, AllowedDomains: a.cpDraft.domains,
+		AllowedGroups: a.cpDraft.groups, AllowedUsers: a.cpDraft.users}
+	for _, w := range wireguard.OIDCWarnings(draft) {
+		lines = append(lines, "WARNING: "+w)
+	}
+	if len(a.cpDraft.domains) == 0 && len(a.cpDraft.groups) == 0 && len(a.cpDraft.users) == 0 {
+		lines = append(lines, "WARNING: every allow list is empty, so anyone the IdP "+
+			"authenticates can join the tailnet.")
+	}
+	return strings.Join(lines, "\n")
 }
 
 // serviceAccount renders the account a unit runs as, for a dialog.
