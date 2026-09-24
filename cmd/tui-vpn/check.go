@@ -97,6 +97,9 @@ type cpSummary struct {
 	Readable     bool   `json:"readable"`
 	Error        string `json:"error,omitempty"`
 	ServiceState string `json:"serviceState,omitempty"`
+	// ServiceEnabled is `systemctl is-enabled headscale`: "disabled" is the
+	// fresh-install state that loses the control plane at the next reboot.
+	ServiceEnabled string `json:"serviceEnabled,omitempty"`
 	// ServerURLSet reports that a server_url is configured at all.
 	ServerURLSet bool `json:"serverUrlSet"`
 	// ServerURLHTTPS and ServerURLLoopback are what the URL itself is not
@@ -199,6 +202,7 @@ func summariseHS(hs wireguard.Headscale) hsSummary {
 			Readable:               cp.Readable,
 			Error:                  cp.Error,
 			ServiceState:           cp.ServiceState,
+			ServiceEnabled:         cp.ServiceEnabled,
 			ServerURLSet:           cp.ServerURL != "",
 			ServerURLHTTPS:         wireguard.ServerURLIsHTTPS(cp.ServerURL),
 			ServerURLLoopback:      wireguard.IsLoopbackHost(wireguard.URLHost(cp.ServerURL)),

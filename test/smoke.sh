@@ -126,6 +126,21 @@ check "check --demo carries no URL either" \
   "$bin --demo --check | grep -c '://' || true" \
   '^0$'
 
+# Whether the unit starts at boot is the half of "is it running" a fresh
+# install gets wrong: the package leaves it disabled.
+check "check --demo says whether the unit starts at boot" \
+  "$bin --demo --check" \
+  '"serviceEnabled": "disabled"'
+
+# On a machine with headscale installed, the same fact comes from the real
+# unit, and has to agree with systemd's own answer.
+if command -v headscale >/dev/null 2>&1; then
+  enabled=$(systemctl is-enabled headscale 2>/dev/null | head -1)
+  check "check agrees with systemctl about the unit starting at boot" \
+    "sudo -n $bin --check" \
+    "\"serviceEnabled\": \"${enabled:-unknown}\""
+fi
+
 check "check --demo keeps the inference as a separate field" \
   "$bin --demo --check" \
   '"oidcInferred":'

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/tui-tools/tui-kit/theme"
 	"github.com/tui-tools/tui-vpn/internal/wireguard"
 )
 
@@ -90,8 +91,17 @@ func TestServerSettingsFlow(t *testing.T) {
 
 	a = confirmAndRun(t, a)
 
+	// The demo's unit is running but disabled, so the tail is an enable and
+	// then the restart that reads the new configuration.
 	if a.mode != modeConfirm {
-		t.Fatalf("the write did not chain the restart (mode %d)", a.mode)
+		t.Fatalf("the write did not chain the enable (mode %d)", a.mode)
+	}
+	if a.confirm.Command != "systemctl enable headscale" {
+		t.Errorf("preview = %q, want the enable", a.confirm.Command)
+	}
+	a = confirmAndRun(t, a)
+	if a.mode != modeConfirm {
+		t.Fatalf("the enable did not chain the restart (mode %d)", a.mode)
 	}
 	if !strings.Contains(a.confirm.Command, "systemctl restart headscale") {
 		t.Errorf("preview = %q, want the restart", a.confirm.Command)
@@ -212,7 +222,12 @@ func TestOIDCFlowNeverShowsTheSecret(t *testing.T) {
 	assertNoSecret(t, a, secret, "the config-write dialog")
 	a = confirmAndRun(t, a)
 
-	// Step 3: the restart.
+	// Step 3: the demo's unit is disabled, so it is enabled first, and
+	// step 4 is the restart.
+	if a.confirm.Command != "systemctl enable headscale" {
+		t.Fatalf("preview = %q, want the enable", a.confirm.Command)
+	}
+	a = confirmAndRun(t, a)
 	if !strings.Contains(a.confirm.Command, "systemctl restart headscale") {
 		t.Fatalf("preview = %q, want the restart", a.confirm.Command)
 	}
@@ -406,5 +421,77 @@ func TestPanelNamesTheServiceAccount(t *testing.T) {
 	a.setScreen(wireguard.ScreenUsers)
 	if !strings.Contains(a.View(), "runs as headscale:headscale") {
 		t.Errorf("the panel does not name the service account:\n%s", a.View())
+	}
+}
+
+// TestRestartStepFollowsTheUnitState: the last step of S depends on whether
+// the unit starts at boot. A fresh install (inactive, disabled) is enabled and
+// started in one command; an enabled unit gets the plain restart it always
+// got; and a disabled unit that is already running is enabled and then
+// restarted, because `enable --now` would leave it on the old configuration.
+func TestRestartStepFollowsTheUnitState(t *testing.T) {
+	for _, tc := range []struct {
+		name, active, enabled string
+		want                  []string
+	}{
+		{"fresh install", "inactive", "disabled",
+			[]string{"systemctl enable --now headscale"}},
+		{"already enabled", "active", "enabled",
+			[]string{"systemctl restart headscale"}},
+		{"running but disabled", "active", "disabled",
+			[]string{"systemctl enable headscale", "systemctl restart headscale"}},
+		{"state unknown", "unknown", "unknown",
+			[]string{"systemctl restart headscale"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := wireguard.NewFake()
+			fake.SetService(tc.active, tc.enabled)
+			a := newApp(fake, theme.New(), nil)
+			a.width, a.height = 100, 30
+			state, err := fake.Load(t.Context())
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			a.state, a.loading = state, false
+			a.setScreen(wireguard.ScreenUsers)
+
+			model, _ := a.Update(key("S"))
+			a = model.(*app)
+			a = clearAndType(t, a, "https://vpn.example.org")
+			a = enter(t, a)
+			a = confirmAndRun(t, a) // the config write
+
+			for i, want := range tc.want {
+				if a.mode != modeConfirm {
+					t.Fatalf("step %d: no confirm open (mode %d)", i, a.mode)
+				}
+				if a.confirm.Command != want {
+					t.Fatalf("step %d: preview = %q, want %q", i, a.confirm.Command, want)
+				}
+				a = confirmAndRun(t, a)
+			}
+			if a.mode == modeConfirm {
+				t.Fatalf("an extra step followed: %q", a.confirm.Command)
+			}
+			after, _ := fake.Load(t.Context())
+			if tc.enabled == "disabled" && after.Headscale.ControlPlane.ServiceEnabled != "enabled" {
+				t.Errorf("the unit is still %q after the flow",
+					after.Headscale.ControlPlane.ServiceEnabled)
+			}
+		})
+	}
+}
+
+// TestPanelSaysWhetherTheUnitStartsAtBoot: enabled or disabled sits next to
+// the active state, and a disabled unit says what that costs.
+func TestPanelSaysWhetherTheUnitStartsAtBoot(t *testing.T) {
+	a := newTestApp(t)
+	a.setScreen(wireguard.ScreenUsers)
+	view := a.View()
+	if !strings.Contains(view, "headscale active · disabled") {
+		t.Errorf("the panel does not show the enabled state:\n%s", view)
+	}
+	if !strings.Contains(view, "won't start at boot") {
+		t.Errorf("a disabled unit is not called out:\n%s", view)
 	}
 }

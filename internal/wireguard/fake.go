@@ -26,7 +26,11 @@ type Fake struct {
 	// control-plane flows are exercised for real: the diff the confirm dialog
 	// shows under --demo is computed by the same editor that runs on a router.
 	config string
-	run    *runner.Fake
+	// serviceState and serviceEnabled are the demo unit's is-active and
+	// is-enabled answers. They live outside the parsed state so a re-read of
+	// the configuration keeps them, the way a real re-read would.
+	serviceState, serviceEnabled string
+	run                          *runner.Fake
 }
 
 // Demonstration keys. They are valid WireGuard key syntax (43 base64 characters
@@ -54,7 +58,12 @@ func DemoPeer2Pub() string { return demoPeer2Pub }
 // two peers — one mid-handshake, one that has never connected — and a Headscale
 // control plane with two users, three nodes and a pre-auth key.
 func NewFake() *Fake {
-	f := &Fake{state: demoState(), config: demoHeadscaleConfig}
+	// The demo unit is running but disabled: started by hand after the
+	// package installed it, the way a fresh install usually ends up, and
+	// gone after the next reboot. It is what makes the enable at the end of
+	// S and O visible under --demo.
+	f := &Fake{state: demoState(), config: demoHeadscaleConfig,
+		serviceState: "active", serviceEnabled: "disabled"}
 	f.run = &runner.Fake{Hook: f.apply}
 	f.reloadControlPlane()
 	return f
@@ -102,12 +111,23 @@ func (f *Fake) reloadControlPlane() {
 			ConfigPath: HeadscaleConfigPath, Error: err.Error()}
 		return
 	}
-	cp.ServiceState = "active"
+	cp.ServiceState = f.serviceState
+	cp.ServiceEnabled = f.serviceEnabled
 	// The demo's unit runs headscale as its own user, which is the case the
 	// secret write has to get right: an `install` without -o would leave the
 	// service unable to read its own secret.
 	cp.ServiceUser, cp.ServiceGroup = "headscale", "headscale"
 	f.state.Headscale.ControlPlane = cp
+}
+
+// SetService sets the demo unit's is-active and is-enabled answers, so a test
+// can put the fake in the state it wants to drive a flow from (a fresh
+// install is "inactive" and "disabled").
+func (f *Fake) SetService(active, enabled string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.serviceState, f.serviceEnabled = active, enabled
+	f.reloadControlPlane()
 }
 
 // Name identifies the backend.
@@ -186,8 +206,17 @@ func (f *Fake) apply(cmd runner.Command) (string, error) {
 	case len(argv) >= 4 && argv[0] == "systemctl" && argv[1] == "show":
 		return "User=headscale\nGroup=headscale", nil
 	case len(argv) == 3 && argv[0] == "systemctl" && argv[1] == "restart":
-		f.state.Headscale.ControlPlane.ServiceState = "active"
+		f.serviceState = "active"
+		f.state.Headscale.ControlPlane.ServiceState = f.serviceState
 		return "", nil
+	case len(argv) >= 3 && argv[0] == "systemctl" && argv[1] == "enable":
+		f.serviceEnabled = "enabled"
+		if hasToken(argv, "--now") {
+			f.serviceState = "active"
+		}
+		f.state.Headscale.ControlPlane.ServiceState = f.serviceState
+		f.state.Headscale.ControlPlane.ServiceEnabled = f.serviceEnabled
+		return "Created symlink /etc/systemd/system/multi-user.target.wants/headscale.service.", nil
 	case len(argv) >= 2 && argv[0] == "curl":
 		return demoDiscoveryDocument, nil
 	default:

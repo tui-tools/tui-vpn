@@ -69,6 +69,12 @@ type ControlPlane struct {
 	BaseDomain string `json:"baseDomain,omitempty"`
 	// ServiceState is what `systemctl is-active headscale` answered.
 	ServiceState string `json:"serviceState,omitempty"`
+	// ServiceEnabled is what `systemctl is-enabled headscale` answered. A
+	// freshly installed package leaves the unit disabled: a restart starts it
+	// now, and the control plane is gone after the next reboot. That is why
+	// the last step of a configuration flow enables a disabled unit instead
+	// of only restarting it.
+	ServiceEnabled string `json:"serviceEnabled,omitempty"`
 	// ServiceUser and ServiceGroup are the account the headscale unit runs as,
 	// read from the unit rather than assumed. They matter for exactly one
 	// thing: the client secret file has to be readable by that account. The
@@ -878,6 +884,33 @@ func BuildRestartHeadscale() (runner.Command, error) {
 		Argv:        []string{"systemctl", "restart", HeadscaleService},
 		Description: "Restart " + HeadscaleService,
 		Destructive: true,
+	}, nil
+}
+
+// ServiceNeedsEnable reports whether a unit in this is-enabled state has to be
+// enabled for the control plane to survive a reboot. Only "disabled" does:
+// "enabled", "static", "indirect" and the rest already have their own way to
+// start, "masked" refuses any enable, and an answer that could not be read is
+// not a reason to change anything.
+func ServiceNeedsEnable(enabled string) bool { return enabled == "disabled" }
+
+// BuildEnableHeadscale assembles the enable a disabled unit needs. With now,
+// it is `systemctl enable --now`, which also starts a unit that is not
+// running: the whole last step of a configuration flow on a fresh install.
+// Without it, it is a plain enable, for a unit that is already running and
+// still needs the restart to read the new configuration — `enable --now`
+// leaves a running unit alone, so it would never apply the change.
+func BuildEnableHeadscale(now bool) (runner.Command, error) {
+	if now {
+		return runner.Command{
+			Argv:        []string{"systemctl", "enable", "--now", HeadscaleService},
+			Description: "Enable and start " + HeadscaleService,
+			Destructive: true,
+		}, nil
+	}
+	return runner.Command{
+		Argv:        []string{"systemctl", "enable", HeadscaleService},
+		Description: "Enable " + HeadscaleService + " at boot",
 	}, nil
 }
 

@@ -36,7 +36,7 @@ tui-vpn --demo
 
 - **interfaces** — the WireGuard interfaces on this host, with peer counts and state. `N` creates one from zero, `u` / `d` bring one up or down, `w` saves its runtime config.
 - **peers** — the peers of the selected interface: endpoint, handshake age, transfer, allowed-ips, keepalive. `a` / `x` add or remove a peer (end the add line with `psk` to also generate a pre-shared key file); `w` saves.
-- **users** — the Headscale users, and the provider they authenticate against, under a panel showing what `/etc/headscale/config.yaml` says: `server_url`, `listen_addr`, the OIDC issuer and client id, whether a client secret is set, the allow lists, and the state of the `headscale` unit. `n` creates a user; `S` and `O` configure the control plane.
+- **users** — the Headscale users, and the provider they authenticate against, under a panel showing what `/etc/headscale/config.yaml` says: `server_url`, `listen_addr`, the OIDC issuer and client id, whether a client secret is set, the allow lists, and the state of the `headscale` unit: active or not, enabled at boot or not, and the account it runs as. `n` creates a user; `S` and `O` configure the control plane.
 - **nodes** — the machines registered with Headscale, who owns each, and key expiry. `e` expires one, `m` renames one, `x` deletes one.
 - **preauth keys** — the keys that let a machine register itself, shown by prefix only. `n` creates one, shown exactly once.
 
@@ -83,7 +83,19 @@ Pick the owning user by id and optionally add the words `reusable`, `ephemeral` 
 - **`server_url`** — the base URL clients reach the control plane on, and the URL your IdP redirects a browser back to. tui-vpn warns when it is plain `http` (most IdPs refuse an http redirect URI) or points at loopback (a client's browser cannot reach it). It has to be reachable from the clients' own networks: [tui-cert](https://github.com/tui-tools/tui-cert) issues the certificate, [tui-firewall](https://github.com/tui-tools/tui-firewall) opens the port.
 - **`listen_addr`** — the address headscale binds. Loopback or an internal address when a reverse proxy terminates TLS in front of it, `0.0.0.0` when it does not.
 
-The confirm dialog shows a **diff of the changed lines and nothing else**, then the write, then `systemctl restart headscale` as a separate, optional confirm.
+The confirm dialog shows a **diff of the changed lines and nothing else**, then the write, then the step that makes headscale read it as a separate, optional confirm (see [The last step: restart, or enable](#the-last-step-restart-or-enable)).
+
+### The last step: restart, or enable
+
+`S` and `O` both end by making headscale read the new configuration, and what that takes depends on the unit, which the panel shows next to its active state (`headscale active · enabled`):
+
+| The unit is | The last step previews |
+| --- | --- |
+| enabled (or static, indirect: anything that already starts at boot) | `systemctl restart headscale` |
+| disabled and not running, which is how a fresh package install leaves it | `systemctl enable --now headscale` |
+| disabled but running, started by hand | `systemctl enable headscale`, then `systemctl restart headscale` as its own confirm |
+
+A disabled unit is the trap: a restart brings the control plane up now, and it is gone after the next reboot. `enable --now` would not help the third row either, because it leaves a running unit alone and the new configuration would never be read. Esc at any of these steps leaves the file written and the unit as it was.
 
 ### Identity provider (OIDC)
 
@@ -104,7 +116,7 @@ A secret found sitting *inline* in `config.yaml` — someone else's setup, or an
 
 **The issuer is checked before saving.** tui-vpn fetches `<issuer>/.well-known/openid-configuration` with `curl` **from the server itself** — the machine that will have to reach the IdP — and reports what it found. A failure is a warning, not a refusal: an IdP that is down this minute is not a reason to be unable to write down its address.
 
-**Then a restart.** A configuration change does nothing until the unit that reads it restarts, so the flow ends with `systemctl restart headscale` as its own confirm. Esc there leaves the file written and the running server on the old settings.
+**Then a restart.** A configuration change does nothing until the unit that reads it restarts, so the flow ends with `systemctl restart headscale` as its own confirm, or with the enable a disabled unit needs (see [the last step](#the-last-step-restart-or-enable)). Esc there leaves the file written and the running server on the old settings.
 
 **The secret file is owned by the service, not by root.** tui-vpn reads `systemctl show headscale -p User -p Group` and hands the file to that account in the same previewed `install`, so there is no second step and no window in which the ownership is wrong. It matters because the packages disagree: the `.deb`'s unit runs headscale as root, while the Arch package runs it as its own `headscale` user — and a root-only secret file would leave that service unable to read its own credential and unable to come back from the restart at the end of the flow. A unit that names no user gets `root:root`, which is what systemd would have used anyway. The mode stays `600` in every case: the owner is what changes, so the file is readable by exactly one account either way. The panel shows which account that is, next to the unit's state.
 
@@ -130,7 +142,7 @@ tui-vpn --check
 
 Reads the interfaces and the control plane once and prints a summary as JSON: interface and peer counts, per-peer handshake ages, whether Headscale is present, user and node counts, and a `compat` block naming each backend's version.
 
-It also carries a `controlPlane` block read from `/etc/headscale/config.yaml`: `serviceState`, `oidcClientId`, the scope, whether a client secret is set, and the answers below. `oidcConfigured` now comes from that configuration rather than being guessed; the older guess — inferred from users carrying a provider and nodes registered through OIDC — stays as `oidcInferred`, which is the answer used on a host whose `config.yaml` cannot be read.
+It also carries a `controlPlane` block read from `/etc/headscale/config.yaml`: `serviceState` and `serviceEnabled` (what `systemctl is-active` and `is-enabled` answer for the unit), `oidcClientId`, the scope, whether a client secret is set, and the answers below. `oidcConfigured` now comes from that configuration rather than being guessed; the older guess — inferred from users carrying a provider and nodes registered through OIDC — stays as `oidcInferred`, which is the answer used on a host whose `config.yaml` cannot be read.
 
 Like `--report`, it carries **no key, no endpoint, no URL and no address of the host** — and the control-plane block is no exception. What an "OIDC does not work" report actually needs is the two ways the setup fails, not the URL that names your server, so:
 

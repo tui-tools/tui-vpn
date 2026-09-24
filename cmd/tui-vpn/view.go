@@ -95,21 +95,16 @@ func (a *app) noteLines() []string {
 // text rather than a table because these are facts about one thing, not rows.
 func (a *app) controlPlanePanel() []string {
 	cp := a.state.Headscale.ControlPlane
-	head := "control plane · " + orDash(cp.ConfigPath)
-	if cp.ServiceState != "" {
-		head += " · headscale " + cp.ServiceState
-	}
-	if cp.ServiceUser != "" {
-		// The account matters because the client secret file is written owned
-		// by it: this is the value that has to be right for the restart.
-		head += " · runs as " + serviceAccount(cp)
+	lines := []string{"control plane · " + orDash(cp.ConfigPath)}
+	if service := serviceLine(cp); service != "" {
+		lines = append(lines, service)
 	}
 	if !cp.Readable {
 		reason := cp.Error
 		if reason == "" {
 			reason = "not read"
 		}
-		return []string{head, "  " + reason + " — it must be readable before it can be edited"}
+		return append(lines, "  "+reason+" — it must be readable before it can be edited")
 	}
 	oidc := cp.OIDC
 	server := "  server_url  " + orDash(cp.ServerURL) +
@@ -117,18 +112,45 @@ func (a *app) controlPlanePanel() []string {
 	if a.serverURLWarning(cp.ServerURL) != "" {
 		server += "   ⚠"
 	}
-	return []string{
-		head,
+	return append(lines,
 		server,
-		"  oidc        issuer " + orDash(oidc.Issuer) +
-			" · client_id " + orDash(oidc.ClientID) + " · " + secretState(oidc),
-		"  allowed     domains " + listOrDash(oidc.AllowedDomains) +
-			" · groups " + listOrDash(oidc.AllowedGroups) +
-			" · users " + listOrDash(oidc.AllowedUsers),
-		"  scope       " + listOrDash(oidc.Scope) +
-			" · pkce " + onOff(oidc.PKCE) +
-			" · only_start_if_oidc_is_available " + yesNo(oidc.OnlyStartIfAvailable),
+		"  oidc        issuer "+orDash(oidc.Issuer)+
+			" · client_id "+orDash(oidc.ClientID)+" · "+secretState(oidc),
+		"  allowed     domains "+listOrDash(oidc.AllowedDomains)+
+			" · groups "+listOrDash(oidc.AllowedGroups)+
+			" · users "+listOrDash(oidc.AllowedUsers),
+		"  scope       "+listOrDash(oidc.Scope)+
+			" · pkce "+onOff(oidc.PKCE)+
+			" · only_start_if_oidc_is_available "+yesNo(oidc.OnlyStartIfAvailable),
+	)
+}
+
+// serviceLine is the state of the unit that reads the configuration: whether
+// it runs, whether it starts at boot, and the account it runs as. Each half is
+// a way the control plane silently goes away: a unit that is not active, a
+// unit that is disabled and so gone after the next reboot, and an account that
+// cannot read the files the tool writes for it.
+func serviceLine(cp wireguard.ControlPlane) string {
+	parts := []string{}
+	if cp.ServiceState != "" {
+		parts = append(parts, cp.ServiceState)
 	}
+	if cp.ServiceEnabled != "" {
+		enabled := cp.ServiceEnabled
+		if wireguard.ServiceNeedsEnable(enabled) {
+			enabled += " (won't start at boot)"
+		}
+		parts = append(parts, enabled)
+	}
+	if cp.ServiceUser != "" {
+		// The account matters because the client secret file is written owned
+		// by it: this is the value that has to be right for the restart.
+		parts = append(parts, "runs as "+serviceAccount(cp))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "  service     headscale " + strings.Join(parts, " · ")
 }
 
 // secretState says whether a client secret is configured, and never more than
@@ -599,7 +621,8 @@ func helpKeys() []ui.KeyHint {
 		{Key: "n", Desc: "create a Headscale user (users) / pre-auth key (keys)"},
 		{Key: "e / m / x", Desc: "expire / rename / delete the selected node"},
 		{Key: "S", Desc: "server settings (users): server_url and listen_addr in"},
-		{Key: "", Desc: "/etc/headscale/config.yaml, then a restart"},
+		{Key: "", Desc: "/etc/headscale/config.yaml, then a restart (or an"},
+		{Key: "", Desc: "enable, when the unit is disabled)"},
 		{Key: "O", Desc: "identity provider (users): issuer, client id, secret,"},
 		{Key: "", Desc: "allow lists, scope, pkce — then a restart"},
 		{Key: "", Desc: ""},

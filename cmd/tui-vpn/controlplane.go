@@ -399,11 +399,45 @@ func (a *app) confirmConfigWrite(intro string, edits []wireguard.ConfigEdit) tea
 // confirmRestartHeadscale is the last step: a configuration change does
 // nothing until the unit that reads it restarts. It is optional — esc leaves
 // the file written and the running server on the old configuration.
+//
+// A disabled unit gets more than a restart. A fresh package install leaves
+// headscale disabled, so a restart alone brings the control plane up now and
+// loses it at the next reboot. A disabled unit that is not running is enabled
+// and started in one step (`systemctl enable --now`); one that is running is
+// enabled and then restarted, because `enable --now` leaves a running unit
+// alone and the new configuration would never be read.
 func (a *app) confirmRestartHeadscale() tea.Cmd {
 	a.cpDraft.forgetSecret()
+	cp := a.state.Headscale.ControlPlane
+	if !wireguard.ServiceNeedsEnable(cp.ServiceEnabled) {
+		return a.confirmPlainRestart("Last step")
+	}
+	if cp.ServiceState != "active" {
+		enable, err := wireguard.BuildEnableHeadscale(true)
+		return a.openConfirmWith(
+			"Last step — the headscale unit is disabled and "+orDash(cp.ServiceState)+
+				", so it is enabled and started in one go: a plain restart would bring "+
+				"the control plane up now and lose it at the next reboot. Esc leaves the "+
+				"file written and the unit as it is.",
+			enable, err)
+	}
+	enable, err := wireguard.BuildEnableHeadscale(false)
+	cmd := a.openConfirmWith(
+		"Next step — the headscale unit is running but disabled: it would not come back "+
+			"after a reboot. This enables it at boot; the restart that reads the new "+
+			"configuration follows as its own step. Esc skips both.",
+		enable, err)
+	if a.mode == modeConfirm {
+		a.after = func(string) tea.Cmd { return a.confirmPlainRestart("Last step") }
+	}
+	return cmd
+}
+
+// confirmPlainRestart opens the restart itself.
+func (a *app) confirmPlainRestart(step string) tea.Cmd {
 	restart, err := wireguard.BuildRestartHeadscale()
 	return a.openConfirmWith(
-		"Last step — restart headscale so it reads the new configuration. Every node "+
+		step+" — restart headscale so it reads the new configuration. Every node "+
 			"loses its control connection for as long as the restart takes; established "+
 			"tunnels keep carrying traffic. Esc leaves the file written and the running "+
 			"server on the old settings.",

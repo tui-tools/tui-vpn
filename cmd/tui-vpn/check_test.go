@@ -55,6 +55,11 @@ func TestRunCheckPrintsOneReadOfEverything(t *testing.T) {
 	if !report.Headscale.OIDCConfigured {
 		t.Error("the demo control plane is OIDC-configured; --check should say so")
 	}
+	// The demo's unit runs but is disabled, which --check has to say: it is
+	// the state that loses the control plane at the next reboot.
+	if got := report.Headscale.ControlPlane.ServiceEnabled; got != "disabled" {
+		t.Errorf("serviceEnabled = %q, want disabled", got)
+	}
 	if report.Headscale.NodesExpired != 1 {
 		t.Errorf("nodesExpired = %d, want 1 (the demo has one expired node)", report.Headscale.NodesExpired)
 	}

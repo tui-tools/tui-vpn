@@ -700,3 +700,27 @@ func TestEditRealHeadscaleConfig(t *testing.T) {
 		t.Errorf("re-applying the same settings is not idempotent: %+v", again)
 	}
 }
+
+// TestEnableHeadscale: a disabled unit is the one case that needs enabling,
+// and the two forms of the enable are the two situations it can be in.
+func TestEnableHeadscale(t *testing.T) {
+	for state, want := range map[string]bool{
+		"disabled": true, "enabled": false, "static": false, "masked": false,
+		"indirect": false, "unknown": false, "": false,
+	} {
+		if got := ServiceNeedsEnable(state); got != want {
+			t.Errorf("ServiceNeedsEnable(%q) = %v, want %v", state, got, want)
+		}
+	}
+	now, err := BuildEnableHeadscale(true)
+	if err != nil || now.String() != "systemctl enable --now headscale" {
+		t.Errorf("enable --now = %q, %v", now.String(), err)
+	}
+	if !now.Destructive {
+		t.Error("starting the control plane is as disruptive as restarting it")
+	}
+	plain, err := BuildEnableHeadscale(false)
+	if err != nil || plain.String() != "systemctl enable headscale" {
+		t.Errorf("enable = %q, %v", plain.String(), err)
+	}
+}

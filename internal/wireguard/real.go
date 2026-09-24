@@ -274,6 +274,7 @@ func (r *Real) loadControlPlane(ctx context.Context) ControlPlane {
 	}
 	cp = parsed
 	cp.ServiceState = r.serviceState(ctx)
+	cp.ServiceEnabled = r.serviceEnabled(ctx)
 	cp.ServiceUser, cp.ServiceGroup = r.serviceAccount(ctx)
 	return cp
 }
@@ -301,6 +302,21 @@ func (r *Real) serviceState(ctx context.Context) string {
 	}
 	out, _ := run.Read(ctx, "systemctl", "is-active", HeadscaleService)
 	if state := strings.TrimSpace(runner.FirstLine(out)); state != "" {
+		return state
+	}
+	return "unknown"
+}
+
+// serviceEnabled asks systemd whether the headscale unit starts at boot. Like
+// is-active, is-enabled exits non-zero for most of its answers ("disabled"
+// among them), and the word it printed is the answer either way.
+func (r *Real) serviceEnabled(ctx context.Context) string {
+	run, err := r.runnerFor("systemctl")
+	if err != nil {
+		return "unknown"
+	}
+	out, _ := run.Read(ctx, "systemctl", "is-enabled", HeadscaleService)
+	if state := strings.TrimSpace(runner.FirstLine(out)); state != "" && !strings.Contains(state, " ") {
 		return state
 	}
 	return "unknown"
