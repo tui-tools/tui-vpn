@@ -123,6 +123,19 @@ type cpSummary struct {
 	// against this server_url, when there is one. It is a fixed explanation
 	// and never quotes the URL.
 	ServerURLWarning string `json:"serverUrlWarning,omitempty"`
+	// ServerURLIsIP reports a server_url addressed by IP rather than by name:
+	// fine over plain http, and the reason Let's Encrypt is not an option.
+	ServerURLIsIP bool `json:"serverUrlIsIp"`
+	// Transport is how clients reach headscale: plain-http, letsencrypt,
+	// own-cert or reverse-proxy, read from the TLS settings and the bind.
+	Transport wireguard.Transport `json:"transport,omitempty"`
+	// BaseDomain is dns.base_domain, the MagicDNS suffix nodes are named
+	// under. It is the tailnet's own naming, printed like the issuer's host;
+	// BaseDomainConflict is the startup failure headscale reports when the
+	// server_url host sits inside it.
+	BaseDomain         string `json:"baseDomain,omitempty"`
+	BaseDomainConflict bool   `json:"baseDomainConflict"`
+	MagicDNS           bool   `json:"magicDns"`
 	// ListenPort and ListenLoopback replace listen_addr for the same reason:
 	// a bind address can name an internal interface of this machine, while
 	// the port and "is it only listening to itself" are the useful halves.
@@ -220,7 +233,12 @@ func summariseHS(hs wireguard.Headscale) hsSummary {
 			ServerURLSet:           cp.ServerURL != "",
 			ServerURLHTTPS:         wireguard.ServerURLIsHTTPS(cp.ServerURL),
 			ServerURLLoopback:      wireguard.IsLoopbackHost(wireguard.URLHost(cp.ServerURL)),
-			ServerURLWarning:       wireguard.ServerURLWarning(cp.ServerURL),
+			ServerURLWarning:       wireguard.ServerURLWarning(cp.ServerURL, cp.OIDC.Configured()),
+			ServerURLIsIP:          wireguard.IsIPHost(wireguard.URLHost(cp.ServerURL)),
+			Transport:              transportOf(cp),
+			BaseDomain:             cp.BaseDomain,
+			BaseDomainConflict:     wireguard.BaseDomainConflict(cp.ServerURL, cp.BaseDomain) != "",
+			MagicDNS:               cp.MagicDNS,
 			ListenPort:             wireguard.ListenPort(cp.ListenAddr),
 			ListenLoopback:         wireguard.IsLoopbackHost(wireguard.ListenHost(cp.ListenAddr)),
 			OIDCIssuer:             wireguard.URLHost(cp.OIDC.Issuer),
@@ -256,6 +274,16 @@ func handshakeAge(now, t time.Time) int {
 		return -1
 	}
 	return int(now.Sub(t).Seconds())
+}
+
+// transportOf is the transport for --check, empty when config.yaml could not
+// be read: an unread configuration has no transport to report, and the empty
+// one would read as plain http.
+func transportOf(cp wireguard.ControlPlane) wireguard.Transport {
+	if !cp.Readable {
+		return ""
+	}
+	return wireguard.DetectTransport(cp)
 }
 
 // serviceAccountOf is the unit's account for --check, empty when it was not

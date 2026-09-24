@@ -36,13 +36,13 @@ tui-vpn --demo
 
 - **interfaces** — the WireGuard interfaces on this host, with peer counts and state. `N` creates one from zero, `u` / `d` bring one up or down, `w` saves its runtime config.
 - **peers** — the peers of the selected interface: endpoint, handshake age, transfer, allowed-ips, keepalive. `a` / `x` add or remove a peer (end the add line with `psk` to also generate a pre-shared key file); `w` saves.
-- **users** — the Headscale users, and the provider they authenticate against, under a panel showing what `/etc/headscale/config.yaml` says: `server_url`, `listen_addr`, the OIDC issuer and client id, whether a client secret is set, the allow lists, and the state of the `headscale` unit: active or not, enabled at boot or not, the account it runs as, and whether that account owns its state files. `n` creates a user; `S` and `O` configure the control plane; `F` fixes the ownership of headscale's files.
+- **users** — the Headscale users, and the provider they authenticate against, under a panel showing what `/etc/headscale/config.yaml` says: `server_url`, `listen_addr`, `dns.base_domain`, the transport and the OIDC redirect URI it implies, the OIDC issuer and client id, whether a client secret is set, the allow lists, and the state of the `headscale` unit: active or not, enabled at boot or not, the account it runs as, and whether that account owns its state files. `n` creates a user; `S` and `O` configure the control plane; `F` fixes the ownership of headscale's files.
 - **nodes** — the machines registered with Headscale, who owns each, and key expiry. `e` expires one, `m` renames one, `x` deletes one.
 - **preauth keys** — the keys that let a machine register itself, shown by prefix only. `n` creates one, shown exactly once.
 
 ![The peers screen: endpoints, handshake age and transfer for the selected interface](docs/screenshots/tui-vpn-peers.png)
 
-![The users screen, under the control-plane panel: server_url, listen_addr, the OIDC issuer and client id, and that a client secret is set](docs/screenshots/tui-vpn-users.png)
+![The users screen, under the control-plane panel: the unit's state and account, file ownership, server_url, transport, base domain, the OIDC redirect URI, issuer and client id, and that a client secret is set](docs/screenshots/tui-vpn-users.png)
 
 The panel is the answer to what the identity note used to leave hanging: which IdP, reachable at which URL, and whether a secret is set — never what it is.
 
@@ -78,12 +78,28 @@ Pick the owning user by id and optionally add the words `reusable`, `ephemeral` 
 
 ### Server settings (`S` on the users screen)
 
-`S` asks for two values and writes them into `/etc/headscale/config.yaml`:
+`S` is how clients reach the control plane. It starts with the **transport**, because the transport decides what every later answer means, and writes only the lines that transport needs into `/etc/headscale/config.yaml`:
 
-- **`server_url`** — the base URL clients reach the control plane on, and the URL your IdP redirects a browser back to. tui-vpn warns when it is plain `http` (most IdPs refuse an http redirect URI) or points at loopback (a client's browser cannot reach it). It has to be reachable from the clients' own networks: [tui-cert](https://github.com/tui-tools/tui-cert) issues the certificate, [tui-firewall](https://github.com/tui-tools/tui-firewall) opens the port.
-- **`listen_addr`** — the address headscale binds. Loopback or an internal address when a reverse proxy terminates TLS in front of it, `0.0.0.0` when it does not.
+| Transport | `server_url` | `listen_addr` | What else is written | What is cleared |
+| --- | --- | --- | --- | --- |
+| **plain http** | `http://`, an IP or a name | proposed as `0.0.0.0:<the URL's port>` | nothing | `tls_letsencrypt_hostname`, `tls_cert_path`, `tls_key_path` |
+| **Let's Encrypt** | `https://` and a public DNS name; an IP is refused | `0.0.0.0:443` | `tls_letsencrypt_hostname` (the URL's host), `tls_letsencrypt_challenge_type` (`TLS-ALPN-01` when port 80 is closed, `HTTP-01` otherwise), `acme_email` (optional) | `tls_cert_path`, `tls_key_path` |
+| **own certificate** | `https://` and the name on the certificate | `0.0.0.0:443` | `tls_cert_path`, `tls_key_path` | `tls_letsencrypt_hostname` |
+| **reverse proxy** | `https://` and the name the proxy serves | loopback, refused otherwise | nothing: TLS ends at the proxy | `tls_letsencrypt_hostname`, `tls_cert_path`, `tls_key_path` |
 
-The confirm dialog shows a **diff of the changed lines and nothing else**, then the write, then the step that makes headscale read it as a separate, optional confirm (see [The last step: restart, or enable](#the-last-step-restart-or-enable)).
+"Cleared" means emptied where the file already has the key, and left alone where it does not: switching from Let's Encrypt to plain http empties `tls_letsencrypt_hostname`, so headscale stops asking for a certificate nobody wants, and a file that never had the key gains no empty line.
+
+Every transport ends with **`dns.base_domain`**, the MagicDNS domain nodes are named under. It is checked the way headscale checks it at startup: a valid DNS name, required while `dns.magic_dns` is on, and not a suffix of the `server_url` host (MagicDNS owns every name under it, so clients could not reach the control plane, and headscale refuses to start).
+
+A refused answer reopens its own step with the reason on top and what you typed still in it.
+
+**Plain http is a real option, not a mistake.** The Tailscale control protocol runs over Noise, so everything between clients and headscale is encrypted and authenticated whatever the URL scheme. The one thing that needs https is a browser: an OIDC login redirects to `<server_url>/oidc/callback`, and Google and most other IdPs refuse a redirect URI that is plain http or names a raw IP. So the panel explains plain http instead of warning about it, and only when OIDC is configured do the form and the confirm dialog say, before and after the answer, that browser logins will fail. The panel also shows that redirect URI, next to whether an IdP will accept it, because it is the value an OAuth client has to be registered with.
+
+The painless case, a server reached by IP: pick **plain http**, type `http://203.0.113.10:443`, accept the proposed `0.0.0.0:443`, and give a private base domain such as `tailnet.internal`. The diff is three lines.
+
+**An own certificate is checked before it is written.** The form `stat`s the certificate, the key and every directory above them from this machine, and refuses a pair the account headscale runs as cannot reach, naming the file or directory in the way. The pair [tui-cert](https://github.com/tui-tools/tui-cert) issues lives in its root-only `/etc/ssl/tui-cert`, which a `headscale` user cannot enter: its install step copies the pair wherever the service can read it. A path under `/home` or `/tmp` gets a warning, because the packaged unit hides those trees from the service. [tui-firewall](https://github.com/tui-tools/tui-firewall) opens the port, or port 80 for `HTTP-01`.
+
+The confirm dialog shows a **diff of the changed lines and nothing else** (a value already in the file, however it is quoted, is not a change), then the write, then the step that makes headscale read it as a separate, optional confirm (see [The last step: restart, or enable](#the-last-step-restart-or-enable)).
 
 ### The last step: restart, or enable
 
@@ -170,11 +186,11 @@ Like `--report`, it carries **no key, no endpoint, no URL and no address of the 
 
 | Instead of | `--check` prints |
 | --- | --- |
-| `server_url` | `serverUrlSet`, `serverUrlHttps` and `serverUrlLoopback` — the two questions worth asking, as booleans |
+| `server_url` | `serverUrlSet`, `serverUrlHttps`, `serverUrlLoopback` and `serverUrlIsIp` — the questions worth asking, as booleans — and `transport` (`plain-http`, `letsencrypt`, `own-cert` or `reverse-proxy`) |
 | `listen_addr` | `listenPort` and `listenLoopback`, because a bind address can name an internal interface |
 | the OIDC issuer URL | `oidcIssuer`, reduced to the issuer's **host name** — which IdP, without the realm and path that describe your internal layout |
 
-The allow lists are counted rather than printed, because they name people, and the client secret has no field at all — only `oidcClientSecretSet`. `test/smoke.sh` asserts that no `://` survives anywhere in the output.
+`baseDomain` is printed as it is, like the issuer's host: it is the tailnet's own naming, and `baseDomainConflict` answers whether headscale would refuse to start over it. The allow lists are counted rather than printed, because they name people, and the client secret has no field at all — only `oidcClientSecretSet`. `test/smoke.sh` asserts that no `://` survives anywhere in the output.
 
 <!-- install:start -->
 <!-- Generated by tui-kit/tools/render-install.py from tool.json. -->

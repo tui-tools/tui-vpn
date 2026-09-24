@@ -3,7 +3,7 @@
   "name": "tui-vpn",
   "binary": "tui-vpn",
   "tagline": "WireGuard and its control plane, from the terminal",
-  "description": "WireGuard from the terminal, together with the self-hosted control plane that decides who is allowed onto it.\n\nThe status screen reads your interfaces straight from `wg show all dump`: peers, endpoints, handshakes, transfer, allowed IPs and keepalive. Creating an interface from zero, up/down, adding or removing a peer, saving the runtime config — every change is previewed as the exact command line and applied only after you confirm it. A private key is never shown, typed, or put on a command line.\n\nWith a [Headscale](https://headscale.net) control plane it also manages users, nodes and pre-auth keys, and configures identity itself: `S` writes `server_url` and `listen_addr`, `O` writes the whole `oidc` section of `/etc/headscale/config.yaml`, each previewing a minimal diff — only the lines that change — and ending with a restart, or the enable a freshly installed, disabled unit needs. The panel also checks that the account headscale runs as owns its state files, and `F` previews the chown when it does not. The OIDC client secret is typed masked, written mode 600 to its own file owned by the account the `headscale` unit runs as, referenced as `client_secret_path`, and never displayed again. Login stays where it belongs: the client's browser, against your IdP.\n\nRun it with `--demo` to see every screen with nothing installed.",
+  "description": "WireGuard from the terminal, together with the self-hosted control plane that decides who is allowed onto it.\n\nThe status screen reads your interfaces straight from `wg show all dump`: peers, endpoints, handshakes, transfer, allowed IPs and keepalive. Creating an interface from zero, up/down, adding or removing a peer, saving the runtime config — every change is previewed as the exact command line and applied only after you confirm it. A private key is never shown, typed, or put on a command line.\n\nWith a [Headscale](https://headscale.net) control plane it also manages users, nodes and pre-auth keys, and configures identity itself: `S` sets how clients reach it (plain http on an IP or a name, Let's Encrypt, an own certificate or a reverse proxy, plus the MagicDNS base domain), `O` writes the whole `oidc` section of `/etc/headscale/config.yaml`, each previewing a minimal diff — only the lines that change — and ending with a restart, or the enable a freshly installed, disabled unit needs. The panel also checks that the account headscale runs as owns its state files, and `F` previews the chown when it does not. The OIDC client secret is typed masked, written mode 600 to its own file owned by the account the `headscale` unit runs as, referenced as `client_secret_path`, and never displayed again. Login stays where it belongs: the client's browser, against your IdP.\n\nRun it with `--demo` to see every screen with nothing installed.",
   "category": "network",
   "homepage": "https://github.com/tui-tools/tui-vpn",
   "repo": "https://github.com/tui-tools/tui-vpn",
@@ -25,7 +25,7 @@
     },
     {
       "path": "docs/screenshots/tui-vpn-users.png",
-      "caption": "The users screen, under the control-plane panel: server_url, listen_addr, the OIDC issuer and client id, and that a client secret is set — never what it is"
+      "caption": "The users screen, under the control-plane panel: the unit's state and account, file ownership, server_url, transport, base domain, the OIDC redirect URI, issuer and client id, and that a client secret is set — never what it is"
     },
     {
       "path": "docs/screenshots/tui-vpn-headscale.png",
@@ -63,7 +63,7 @@
     },
     {
       "key": "S / O",
-      "action": "Control plane setup (users screen): server settings / identity provider (OIDC)"
+      "action": "Control plane setup (users screen): server settings and transport / identity provider (OIDC)"
     },
     {
       "key": "F",

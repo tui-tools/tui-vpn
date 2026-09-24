@@ -294,16 +294,23 @@ func (r *Real) loadControlPlane(ctx context.Context) ControlPlane {
 // its output is parsed whatever the exit status. Only a read that printed
 // nothing at all leaves the ownership unchecked.
 func (r *Real) checkOwnership(ctx context.Context, cp ControlPlane) Ownership {
-	run, err := r.runnerFor("stat")
-	if err != nil {
-		return Ownership{}
-	}
-	out, _ := run.Read(ctx, StatArgv(OwnershipPaths(cp))...)
-	stats := ParseStat(out)
+	stats := r.Stat(ctx, OwnershipPaths(cp))
 	if len(stats) == 0 {
 		return Ownership{}
 	}
 	return CheckOwnership(cp, stats)
+}
+
+// Stat reads owner, group and mode of each path, escalated. `stat` exits
+// non-zero when any path is missing and still prints every one it found, so
+// the output is parsed whatever the exit status.
+func (r *Real) Stat(ctx context.Context, paths []string) map[string]FileStat {
+	run, err := r.runnerFor("stat")
+	if err != nil || len(paths) == 0 {
+		return map[string]FileStat{}
+	}
+	out, _ := run.Read(ctx, StatArgv(paths)...)
+	return ParseStat(out)
 }
 
 // serviceAccount asks systemd which account the headscale unit runs as. It is

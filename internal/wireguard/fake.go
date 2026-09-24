@@ -79,9 +79,14 @@ func NewFake() *Fake {
 // everything it does not touch. Every host in it is a documentation name.
 const demoHeadscaleConfig = `# headscale configuration (demo)
 
+# Behind a reverse proxy: TLS ends in front, headscale listens on loopback.
 server_url: https://vpn.example.com
-listen_addr: 0.0.0.0:8080
+listen_addr: 127.0.0.1:8080
 metrics_listen_addr: 127.0.0.1:9090
+
+tls_letsencrypt_hostname: ""
+tls_cert_path: ""
+tls_key_path: ""
 
 # The pre-shared key file for DERP, unrelated to OIDC.
 noise:
@@ -107,6 +112,10 @@ oidc:
   pkce:
     enabled: true
 
+dns:
+  magic_dns: true
+  base_domain: tailnet.example.net
+
 log:
   level: info
 `
@@ -124,6 +133,18 @@ func demoStats() map[string]FileStat {
 		{Path: HeadscaleStateDir + "/db.sqlite", User: "headscale", Group: "headscale", Mode: 0o640},
 		{Path: OIDCClientSecretPath, User: "headscale", Group: "headscale", Mode: 0o600},
 		{Path: HeadscaleConfigPath, User: "root", Group: "root", Mode: 0o644},
+		// Two certificate pairs for the own-certificate transport: the one
+		// tui-cert issues into its root-only directory, which the service
+		// account cannot enter, and a copy installed for headscale.
+		{Path: "/etc", User: "root", Group: "root", Mode: 0o755},
+		{Path: "/etc/headscale", User: "root", Group: "root", Mode: 0o755},
+		{Path: "/etc/ssl", User: "root", Group: "root", Mode: 0o755},
+		{Path: "/etc/ssl/tui-cert", User: "root", Group: "root", Mode: 0o700},
+		{Path: "/etc/ssl/tui-cert/vpn.example.com.crt", User: "root", Group: "root", Mode: 0o644},
+		{Path: "/etc/ssl/tui-cert/vpn.example.com.key", User: "root", Group: "root", Mode: 0o600},
+		{Path: "/etc/headscale/tls", User: "root", Group: "headscale", Mode: 0o750},
+		{Path: "/etc/headscale/tls/vpn.example.com.crt", User: "root", Group: "headscale", Mode: 0o644},
+		{Path: "/etc/headscale/tls/vpn.example.com.key", User: "root", Group: "headscale", Mode: 0o640},
 	} {
 		stats[st.Path] = st
 	}
@@ -137,6 +158,13 @@ func (f *Fake) SetStat(st FileStat) {
 	defer f.mu.Unlock()
 	f.stats[st.Path] = st
 	f.reloadControlPlane()
+}
+
+// Stat answers the way `stat` would for the demo's filesystem.
+func (f *Fake) Stat(_ context.Context, paths []string) map[string]FileStat {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.statPaths(paths)
 }
 
 // statPaths answers the way `stat` would for the demo's filesystem.
@@ -194,6 +222,16 @@ func (f *Fake) SetService(active, enabled string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.serviceState, f.serviceEnabled = active, enabled
+	f.reloadControlPlane()
+}
+
+// SetConfig replaces the demo's config.yaml, so a test can drive a flow from
+// another starting point: the file the package ships, or one set up for
+// another transport.
+func (f *Fake) SetConfig(config string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.config = config
 	f.reloadControlPlane()
 }
 

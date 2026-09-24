@@ -13,6 +13,8 @@ came from:
 | `headscale-preauthkeys.json` | **Constructed** from `headscale preauthkeys list --output json`. One reusable key. |
 | `headscale-config.yaml` | **Captured**, unmodified, from the `/etc/headscale/config.yaml` that headscale v0.29.3 ships in its own `.deb` (downloaded from the family mirror `tui-tools/headscale`, sha256 checked against the release `checksums.txt` and the release attestation verified). It is upstream's file, so it names nothing of this host. It is the fixture the control-plane editor is judged on: 494 lines, almost all comments, with the whole `oidc:` section commented out — the case where the section has to be created rather than spliced. |
 | `headscale-config-state-elsewhere.yaml` | **Constructed.** State outside `/var/lib/headscale`, with a pre-0.23 top-level `private_key_path` next to the noise key: the case where the ownership fix must chown file by file and never recurse from a directory headscale does not own. |
+| `headscale-config-letsencrypt.yaml` | **Derived** from `headscale-config.yaml` by changing six lines: an https `server_url`, `listen_addr` on 443, `acme_email`, `tls_letsencrypt_hostname`, the `TLS-ALPN-01` challenge and a `base_domain` outside the host. The transport switch is judged on it: moving to plain http has to empty the hostname and touch nothing else. |
+| `headscale-config-own-cert.yaml` | **Constructed.** An own certificate installed for the service under `/etc/headscale/tls`. |
 | `headscale-config-postgres.yaml` | **Constructed.** A postgres database, so the only state file on this machine is the noise key. |
 
 Headscale is not installed on this machine, so the three list fixtures are
@@ -32,6 +34,16 @@ there were real headscale rules rather than editor bugs, and both are now
 guarded in the tool: `server_url` inside `dns.base_domain` (`BaseDomainConflict`),
 and a `client_secret_path` pointing at a file that does not exist yet, which is
 why the flow writes the secret file **before** it writes `config.yaml`.
+
+The transport editor was validated the same way on a real Ubuntu 24.04 host
+with headscale v0.29.3: the shipped file edited to plain http on an IP
+(`http://203.0.113.10:443`, `listen_addr` `0.0.0.0:443`, `base_domain`
+`tailnet.internal`) and to Let's Encrypt (`TLS-ALPN-01`) were both accepted by
+`headscale configtest` with exit 0, run as an unprivileged user with the state
+paths pointed at a temporary directory; the same Let's Encrypt file with
+`base_domain` set to the server_url's parent domain was refused (exit 1,
+"server_url cannot be part of base_domain"), which is the rule
+`TransportSettings.CheckBaseDomain` enforces in the form.
 
 ## Keys and addresses
 

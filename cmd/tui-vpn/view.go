@@ -108,7 +108,8 @@ func (a *app) controlPlanePanel() []string {
 	}
 	oidc := cp.OIDC
 	server := "  server_url  " + orDash(cp.ServerURL) +
-		"   listen_addr " + orDash(cp.ListenAddr)
+		"   listen_addr " + orDash(cp.ListenAddr) +
+		"   base_domain " + orDash(cp.BaseDomain)
 	if a.serverURLWarning(cp.ServerURL) != "" {
 		server += "   ⚠"
 	}
@@ -117,6 +118,8 @@ func (a *app) controlPlanePanel() []string {
 	}
 	return append(lines,
 		server,
+		"  transport   "+wireguard.TransportNote(cp),
+		"  redirect    "+redirectLine(cp),
 		"  oidc        issuer "+orDash(oidc.Issuer)+
 			" · client_id "+orDash(oidc.ClientID)+" · "+secretState(oidc),
 		"  allowed     domains "+listOrDash(oidc.AllowedDomains)+
@@ -126,6 +129,24 @@ func (a *app) controlPlanePanel() []string {
 			" · pkce "+onOff(oidc.PKCE)+
 			" · only_start_if_oidc_is_available "+yesNo(oidc.OnlyStartIfAvailable),
 	)
+}
+
+// redirectLine is the redirect URI an OAuth client for this server has to be
+// registered with, and whether an IdP will accept it: the value an operator
+// otherwise has to work out and type into the IdP's console by hand.
+func redirectLine(cp wireguard.ControlPlane) string {
+	uri := wireguard.RedirectURI(cp.ServerURL)
+	if uri == "" {
+		return "-"
+	}
+	host := wireguard.URLHost(cp.ServerURL)
+	switch {
+	case !wireguard.ServerURLIsHTTPS(cp.ServerURL):
+		return uri + " — most IdPs (Google included) refuse an http redirect"
+	case wireguard.IsIPHost(host):
+		return uri + " — most IdPs (Google included) refuse a redirect on an IP"
+	}
+	return uri + " — register it with the IdP"
 }
 
 // ownershipLine says whether headscale can read its own files. A mismatch is
@@ -643,8 +664,9 @@ func helpKeys() []ui.KeyHint {
 		{Key: "", Desc: "to also generate a pre-shared key file)"},
 		{Key: "n", Desc: "create a Headscale user (users) / pre-auth key (keys)"},
 		{Key: "e / m / x", Desc: "expire / rename / delete the selected node"},
-		{Key: "S", Desc: "server settings (users): server_url and listen_addr in"},
-		{Key: "", Desc: "/etc/headscale/config.yaml, then a restart (or an"},
+		{Key: "S", Desc: "server settings (users): transport (plain http, Let's"},
+		{Key: "", Desc: "Encrypt, own certificate, reverse proxy), server_url,"},
+		{Key: "", Desc: "listen_addr and dns.base_domain, then a restart (or an"},
 		{Key: "", Desc: "enable, when the unit is disabled)"},
 		{Key: "O", Desc: "identity provider (users): issuer, client id, secret,"},
 		{Key: "", Desc: "allow lists, scope, pkce — then a restart"},

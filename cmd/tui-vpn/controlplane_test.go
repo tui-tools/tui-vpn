@@ -50,45 +50,53 @@ func runPending(t *testing.T, a *app, cmd tea.Cmd) *app {
 	return model.(*app)
 }
 
-// TestServerSettingsFlow drives `S` end to end: two inputs, a diff that shows
-// only the changed lines, and the restart behind it.
+// TestServerSettingsFlow drives `S` end to end on the demo, which sits behind
+// a reverse proxy: the transport is kept, a new server_url typed, listen_addr
+// and base_domain accepted as they are — and the diff is the one line that
+// changed, followed by the enable and restart the running, disabled unit
+// needs.
 func TestServerSettingsFlow(t *testing.T) {
 	a := newTestApp(t)
 	a.setScreen(wireguard.ScreenUsers)
 
 	model, _ := a.Update(key("S"))
 	a = model.(*app)
-	if a.mode != modeInput {
-		t.Fatalf("S did not open the server-settings form (mode %d)", a.mode)
+	if a.mode != modePicker || a.pickerPurpose != pickerTransport {
+		t.Fatalf("S did not open the transport choice (mode %d)", a.mode)
 	}
+	if a.picker.Selected() != transportOptions[wireguard.TransportReverseProxy] {
+		t.Errorf("the picker is not on the current transport: %q", a.picker.Selected())
+	}
+	a = enter(t, a)
 	a = clearAndType(t, a, "https://vpn.example.org")
-	a = clearAndType(t, a, "127.0.0.1:8080")
+	if a.input.Model.Value() != "127.0.0.1:8080" {
+		t.Errorf("listen_addr prefill = %q, want the loopback bind a proxy needs",
+			a.input.Model.Value())
+	}
+	a = enter(t, a)
+	if a.inputPurpose != inputBaseDomain || a.input.Model.Value() != "tailnet.example.net" {
+		t.Fatalf("no base_domain step (purpose %d, value %q)", a.inputPurpose,
+			a.input.Model.Value())
+	}
+	a = enter(t, a)
 
 	if a.mode != modeConfirm {
-		t.Fatalf("the form did not reach a confirm (mode %d)", a.mode)
+		t.Fatalf("the form did not reach a confirm (mode %d, status %q)", a.mode, a.status)
 	}
 	if !strings.Contains(a.confirm.Command, wireguard.HeadscaleConfigPath) {
 		t.Errorf("preview = %q, want the config write", a.confirm.Command)
 	}
-	// The diff is the reason this dialog is trustworthy: exactly two lines
-	// out, two lines in.
+	// The diff is the reason this dialog is trustworthy: one line out, one in.
 	body := a.confirm.Body
-	if strings.Count(body, "\n- ") != 2 || strings.Count(body, "\n+ ") != 2 {
-		t.Errorf("the diff is not the two changed lines:\n%s", body)
+	if strings.Count(body, "\n- ") != 1 || strings.Count(body, "\n+ ") != 1 {
+		t.Errorf("the diff is not the one changed line:\n%s", body)
 	}
-	for _, want := range []string{
-		`+ server_url: "https://vpn.example.org"`,
-		`+ listen_addr: "127.0.0.1:8080"`,
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("the diff is missing %q:\n%s", want, body)
-		}
+	if !strings.Contains(body, `+ server_url: "https://vpn.example.org"`) {
+		t.Errorf("the diff is missing the new server_url:\n%s", body)
 	}
-	// Nothing the edit did not touch may appear in the dialog.
-	if strings.Contains(body, "metrics_listen_addr") || strings.Contains(body, "log:") {
-		t.Errorf("the diff shows lines the edit does not change:\n%s", body)
+	if !strings.Contains(body, "Transport: reverse proxy") {
+		t.Errorf("the dialog does not name the transport:\n%s", body)
 	}
-
 	a = confirmAndRun(t, a)
 
 	// The demo's unit is running but disabled, so the tail is an enable and
@@ -121,22 +129,17 @@ func TestServerSettingsFlow(t *testing.T) {
 	}
 }
 
-// TestServerSettingsWarnsAboutAnUnreachableURL: a syntactically fine URL that
-// no client's browser can reach is the failure this form exists to prevent.
-func TestServerSettingsWarnsAboutAnUnreachableURL(t *testing.T) {
-	a := newTestApp(t)
+// walkServerSettings drives S on the demo keeping every answer but the
+// server_url, up to the config-write confirm.
+func walkServerSettings(t *testing.T, a *app, serverURL string) *app {
+	t.Helper()
 	a.setScreen(wireguard.ScreenUsers)
 	model, _ := a.Update(key("S"))
 	a = model.(*app)
-	a = clearAndType(t, a, "http://127.0.0.1:8080")
-	a = enter(t, a) // keep the prefilled listen_addr
-
-	if a.mode != modeConfirm {
-		t.Fatalf("mode = %d, want a confirm", a.mode)
-	}
-	if !strings.Contains(a.confirm.Body, "WARNING") {
-		t.Errorf("a plain-http loopback server_url was not warned about:\n%s", a.confirm.Body)
-	}
+	a = enter(t, a)                   // the current transport
+	a = clearAndType(t, a, serverURL) // server_url
+	a = enter(t, a)                   // listen_addr
+	return enter(t, a)                // base_domain
 }
 
 // TestOIDCFlowNeverShowsTheSecret is the test the whole feature is written
@@ -207,14 +210,16 @@ func TestOIDCFlowNeverShowsTheSecret(t *testing.T) {
 	assertNoSecret(t, a, secret, "the secret-write dialog")
 	a = confirmAndRun(t, a)
 
-	// Step 2: config.yaml. The diff must carry client_secret_path and not a
-	// client_secret.
+	// Step 2: config.yaml. The diff must not carry a client_secret.
 	if a.mode != modeConfirm {
 		t.Fatalf("the secret write did not chain the config write (mode %d)", a.mode)
 	}
+	// The demo already points client_secret_path at the file, so that line
+	// is not in the diff: an unchanged value is not a change, however the
+	// editor would have quoted it.
 	body := a.confirm.Body
-	if !strings.Contains(body, "client_secret_path") {
-		t.Errorf("the diff does not point headscale at the secret file:\n%s", body)
+	if strings.Contains(body, "client_secret_path") {
+		t.Errorf("the diff rewrites a client_secret_path that already says this:\n%s", body)
 	}
 	if strings.Contains(body, "\n+   client_secret:") {
 		t.Errorf("the diff writes a client_secret into config.yaml:\n%s", body)
@@ -243,6 +248,9 @@ func TestOIDCFlowNeverShowsTheSecret(t *testing.T) {
 		t.Fatalf("load: %v", err)
 	}
 	cp := state.Headscale.ControlPlane
+	if cp.OIDC.ClientSecretPath != wireguard.OIDCClientSecretPath {
+		t.Errorf("client_secret_path = %q, want the secret file", cp.OIDC.ClientSecretPath)
+	}
 	if cp.OIDC.Issuer != "https://idp.example.org/realms/prod" {
 		t.Errorf("issuer = %q", cp.OIDC.Issuer)
 	}
@@ -453,12 +461,7 @@ func TestRestartStepFollowsTheUnitState(t *testing.T) {
 				t.Fatalf("load: %v", err)
 			}
 			a.state, a.loading = state, false
-			a.setScreen(wireguard.ScreenUsers)
-
-			model, _ := a.Update(key("S"))
-			a = model.(*app)
-			a = clearAndType(t, a, "https://vpn.example.org")
-			a = enter(t, a)
+			a = walkServerSettings(t, a, "https://vpn.example.org")
 			a = confirmAndRun(t, a) // the config write
 
 			for i, want := range tc.want {

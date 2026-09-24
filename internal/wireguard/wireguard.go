@@ -605,4 +605,9 @@ type Backend interface {
 	Preview(cmd runner.Command) string
 	// Run executes a previously previewed command.
 	Run(ctx context.Context, cmd runner.Command) (string, error)
+	// Stat reads owner, group and mode of the given paths — a read, like
+	// Load's, with no confirm. A path that does not exist is absent from the
+	// answer. The server-settings form uses it to check that the service
+	// account can read a certificate before it writes the path down.
+	Stat(ctx context.Context, paths []string) map[string]FileStat
 }

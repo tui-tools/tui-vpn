@@ -141,8 +141,16 @@ func TestCheckCarriesNoAddressOfThisHost(t *testing.T) {
 	if !cp.ServerURLSet || !cp.ServerURLHTTPS || cp.ServerURLLoopback {
 		t.Errorf("the server_url booleans do not describe the demo: %+v", cp)
 	}
-	if cp.ListenPort != 8080 || cp.ListenLoopback {
+	// The demo sits behind a reverse proxy: headscale binds loopback.
+	if cp.ListenPort != 8080 || !cp.ListenLoopback {
 		t.Errorf("listen port = %d, loopback = %v", cp.ListenPort, cp.ListenLoopback)
+	}
+	if cp.Transport != wireguard.TransportReverseProxy || cp.ServerURLIsIP {
+		t.Errorf("transport = %q, ip = %v", cp.Transport, cp.ServerURLIsIP)
+	}
+	if cp.BaseDomain != "tailnet.example.net" || cp.BaseDomainConflict || !cp.MagicDNS {
+		t.Errorf("base domain = %q, conflict %v, magic %v", cp.BaseDomain,
+			cp.BaseDomainConflict, cp.MagicDNS)
 	}
 	if cp.OIDCIssuer != "idp.example.com" {
 		t.Errorf("oidcIssuer = %q, want the host alone", cp.OIDCIssuer)

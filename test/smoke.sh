@@ -167,6 +167,22 @@ if command -v headscale >/dev/null 2>&1; then
   fi
 fi
 
+# The transport, read from the TLS settings and the bind: the demo sits behind
+# a reverse proxy, with a MagicDNS domain outside its server_url host.
+check "check --demo names the transport" \
+  "$bin --demo --check" \
+  '"transport": "reverse-proxy"'
+
+check "check --demo reports the base domain without a conflict" \
+  "$bin --demo --check" \
+  '"baseDomainConflict": false'
+
+if command -v headscale >/dev/null 2>&1; then
+  check "check reads a transport from the real configuration" \
+    "sudo -n $bin --check" \
+    '"transport": "(plain-http|letsencrypt|own-cert|reverse-proxy)"'
+fi
+
 check "check --demo keeps the inference as a separate field" \
   "$bin --demo --check" \
   '"oidcInferred":'

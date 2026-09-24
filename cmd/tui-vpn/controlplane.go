@@ -28,7 +28,12 @@ import (
 
 // controlPlaneDraft collects the answers of the two control-plane forms.
 type controlPlaneDraft struct {
+	// The server-settings form: the transport, and what it needs.
+	transport             wireguard.Transport
 	serverURL, listenAddr string
+	challenge, acmeEmail  string
+	certPath, keyPath     string
+	baseDomain            string
 
 	issuer, clientID              string
 	domains, groups, users, scope []string
@@ -56,7 +61,8 @@ func (d *controlPlaneDraft) forgetSecret() {
 // operator means to say.
 func acceptsEmpty(purpose inputPurpose) bool {
 	switch purpose {
-	case inputOIDCDomains, inputOIDCGroups, inputOIDCUsers, inputOIDCSecret:
+	case inputOIDCDomains, inputOIDCGroups, inputOIDCUsers, inputOIDCSecret,
+		inputACMEEmail, inputBaseDomain:
 		return true
 	}
 	return false
@@ -71,67 +77,7 @@ type discoveredMsg struct {
 	detail string
 }
 
-// --- the server-settings form (S) -------------------------------------------
-
-// startServerSettings opens the first step of the server-settings form.
-func (a *app) startServerSettings() tea.Cmd {
-	if !a.controlPlaneEditable() {
-		return nil
-	}
-	cp := a.state.Headscale.ControlPlane
-	a.cpDraft = controlPlaneDraft{}
-	a.openInput(inputServerURL, "Server settings — server_url",
-		"https://vpn.example.com", cp.ServerURL,
-		"The base URL clients reach this control plane on, and the URL the IdP will "+
-			"redirect a browser back to. It has to be https and it has to resolve from "+
-			"the clients' own networks: tui-cert issues the certificate, tui-firewall "+
-			"opens the port.")
-	return nil
-}
-
-// tookServerURL validates step 1 and opens step 2.
-func (a *app) tookServerURL(value string) tea.Cmd {
-	if !wireguard.ValidServerURL(value) {
-		a.setStatusf(ui.StatusError, "not a valid server_url: %q", value)
-		return nil
-	}
-	a.cpDraft.serverURL = value
-	if warning := a.serverURLWarning(value); warning != "" {
-		a.setStatus(ui.StatusWarn, warning)
-	}
-	listen := a.state.Headscale.ControlPlane.ListenAddr
-	if listen == "" {
-		listen = "0.0.0.0:8080"
-	}
-	a.openInput(inputListenAddr, "Server settings — listen_addr",
-		"0.0.0.0:8080", listen,
-		"The address headscale binds. Bind it to a loopback or an internal address when "+
-			"a reverse proxy terminates TLS in front of it, and to 0.0.0.0 when it does not.")
-	return nil
-}
-
-// tookListenAddr validates step 2 and opens the confirm chain.
-func (a *app) tookListenAddr(value string) tea.Cmd {
-	if !wireguard.ValidListenAddr(value) {
-		a.setStatusf(ui.StatusError, "not a valid listen_addr: %q", value)
-		return nil
-	}
-	a.cpDraft.listenAddr = value
-
-	settings := wireguard.ServerSettings{
-		ServerURL: a.cpDraft.serverURL, ListenAddr: a.cpDraft.listenAddr}
-	edits, err := settings.Edits()
-	if err != nil {
-		a.setStatus(ui.StatusError, err.Error())
-		return nil
-	}
-	intro := "Step 1 of 2 — rewrite " + wireguard.HeadscaleConfigPath + ". Only the lines " +
-		"below change; everything else in the file, comments included, is kept byte for byte."
-	if warning := a.serverURLWarning(a.cpDraft.serverURL); warning != "" {
-		intro = "WARNING: " + warning + "\n\n" + intro
-	}
-	return a.confirmConfigWrite(intro, edits)
-}
+// The server-settings form (S) lives in transport.go.
 
 // --- the OIDC form (O) ------------------------------------------------------
 
@@ -519,7 +465,8 @@ func (a *app) confirmPlainRestart(step string) tea.Cmd {
 // start with at all.
 func (a *app) serverURLWarning(url string) string {
 	warnings := []string{}
-	if w := wireguard.ServerURLWarning(url); w != "" {
+	if w := wireguard.ServerURLWarning(url,
+		a.state.Headscale.ControlPlane.OIDC.Configured()); w != "" {
 		warnings = append(warnings, w)
 	}
 	if w := wireguard.BaseDomainConflict(url,
@@ -598,6 +545,14 @@ func (a *app) handleControlPlaneInput(purpose inputPurpose, value string) tea.Cm
 		return a.tookServerURL(value)
 	case inputListenAddr:
 		return a.tookListenAddr(value)
+	case inputACMEEmail:
+		return a.tookACMEEmail(value)
+	case inputTLSCertPath:
+		return a.tookCertPath(value)
+	case inputTLSKeyPath:
+		return a.tookKeyPath(value)
+	case inputBaseDomain:
+		return a.tookBaseDomain(value)
 	case inputOIDCIssuer:
 		return a.tookOIDCIssuer(value)
 	case inputOIDCClientID:
