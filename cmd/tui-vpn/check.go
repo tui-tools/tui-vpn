@@ -44,9 +44,12 @@ type checkReport struct {
 
 // wgSummary is the WireGuard side, reduced.
 type wgSummary struct {
-	Available  bool           `json:"available"`
-	Error      string         `json:"error,omitempty"`
-	Interfaces []ifaceSummary `json:"interfaces"`
+	Available bool   `json:"available"`
+	Error     string `json:"error,omitempty"`
+	// FirewallChecked reports that the host firewall (`iptables -S`) was
+	// read; without root it is not, and every listenPortInput is "unknown".
+	FirewallChecked bool           `json:"firewallChecked"`
+	Interfaces      []ifaceSummary `json:"interfaces"`
 }
 
 // ifaceSummary is one interface without anything that identifies it on the wire.
@@ -57,6 +60,13 @@ type ifaceSummary struct {
 	HasPrivateKey bool          `json:"hasPrivateKey"`
 	PeerCount     int           `json:"peerCount"`
 	Peers         []peerSummary `json:"peers"`
+	// ListenPortInput is what the host's INPUT chain does with a handshake
+	// to the listen port: accept, reject, drop, or unknown when the ruleset
+	// could not be read.
+	ListenPortInput wireguard.Verdict `json:"listenPortInput"`
+	// Forwarding is whether the host's FORWARD chain accepts traffic in on
+	// this interface: a forwarding server.
+	Forwarding bool `json:"forwarding"`
 }
 
 // peerSummary is one peer's health, with no key and no endpoint.
@@ -218,14 +228,21 @@ func runCheckWith(ctx context.Context, backend wireguard.Backend,
 // summariseWG reduces the WireGuard side to counts and ages.
 func summariseWG(state wireguard.State) wgSummary {
 	now := time.Now()
-	summary := wgSummary{Available: state.WGAvailable, Error: state.WGError}
+	summary := wgSummary{Available: state.WGAvailable, Error: state.WGError,
+		FirewallChecked: state.Firewall.Checked}
 	for _, dev := range state.Devices {
+		verdict := dev.PortVerdict
+		if verdict == "" {
+			verdict = wireguard.VerdictUnknown
+		}
 		iface := ifaceSummary{
-			Name:          dev.Name,
-			Up:            dev.Up,
-			ListenPort:    dev.ListenPort,
-			HasPrivateKey: dev.HasPrivateKey,
-			PeerCount:     len(dev.Peers),
+			Name:            dev.Name,
+			Up:              dev.Up,
+			ListenPort:      dev.ListenPort,
+			HasPrivateKey:   dev.HasPrivateKey,
+			PeerCount:       len(dev.Peers),
+			ListenPortInput: verdict,
+			Forwarding:      dev.Forwarding,
 		}
 		for _, peer := range dev.Peers {
 			iface.Peers = append(iface.Peers, peerSummary{

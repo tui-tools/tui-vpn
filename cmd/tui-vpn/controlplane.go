@@ -66,6 +66,9 @@ func acceptsEmpty(purpose inputPurpose) bool {
 	case inputOIDCDomains, inputOIDCGroups, inputOIDCUsers, inputOIDCSecret,
 		inputACMEEmail, inputBaseDomain:
 		return true
+	case inputNewIfaceNetworks:
+		// No networks means a forwarding server for any destination.
+		return true
 	}
 	return false
 }

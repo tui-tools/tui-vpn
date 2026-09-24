@@ -34,6 +34,14 @@ type Fake struct {
 	// headscale's state files and the files this tool writes. chown applies to
 	// it, and the ownership check reads it, exactly like the real ones.
 	stats map[string]FileStat
+	// firewall is the demo's `iptables -S`, as lines: the ruleset of a cloud
+	// image whose INPUT and FORWARD chains end in REJECT, with the demo
+	// interface's port opened and its forwarding rules in place. The
+	// previewed iptables commands edit it, and every Load parses it.
+	firewall []string
+	// confs are the configuration files the demo wrote for new interfaces,
+	// so bringing one up applies its PostUp rules the way wg-quick would.
+	confs map[string]string
 	run   *runner.Fake
 }
 
@@ -67,7 +75,8 @@ func NewFake() *Fake {
 	// gone after the next reboot. It is what makes the enable at the end of
 	// S and O visible under --demo.
 	f := &Fake{state: demoState(), config: demoHeadscaleConfig,
-		serviceState: "active", serviceEnabled: "disabled", stats: demoStats()}
+		serviceState: "active", serviceEnabled: "disabled", stats: demoStats(),
+		firewall: append([]string(nil), demoFirewall...), confs: map[string]string{}}
 	f.run = &runner.Fake{Hook: f.apply}
 	f.reloadControlPlane()
 	return f
@@ -261,6 +270,9 @@ func (f *Fake) Load(_ context.Context) (State, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	state := f.state
+	state.Devices = append([]Device(nil), f.state.Devices...)
+	state.Firewall = ParseIptablesRules(strings.Join(f.firewall, "\n"))
+	state.annotateFirewall()
 	if msg := NotRunningMessage(state.Headscale.ControlPlane); msg != "" {
 		state.Headscale.Error, state.Headscale.NotRunning = msg, true
 		state.Headscale.Users, state.Headscale.Nodes, state.Headscale.PreAuthKeys = nil, nil, nil
@@ -333,6 +345,8 @@ func (f *Fake) apply(cmd runner.Command) (string, error) {
 		return f.chown(argv)
 	case len(argv) >= 2 && argv[0] == "curl":
 		return demoDiscoveryDocument, nil
+	case len(argv) >= 3 && argv[0] == "iptables":
+		return "", f.iptables(argv[1:])
 	default:
 		return "", fmt.Errorf("demo backend does not know how to apply %q", cmd.String())
 	}
@@ -348,9 +362,90 @@ func hasToken(argv []string, token string) bool {
 	return false
 }
 
+// demoFirewall is the demo host's `iptables -S`: the shape of a cloud
+// provider's Ubuntu image, whose INPUT and FORWARD chains end in REJECT, with
+// wg0's listen port opened and its forwarding rules inserted above the
+// REJECT. Every address is from a documentation range.
+var demoFirewall = []string{
+	"-P INPUT ACCEPT",
+	"-P FORWARD DROP",
+	"-P OUTPUT ACCEPT",
+	"-A INPUT -p udp -m udp --dport 51820 -j ACCEPT",
+	"-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT",
+	"-A INPUT -p icmp -j ACCEPT",
+	"-A INPUT -i lo -j ACCEPT",
+	"-A INPUT -p tcp -m state --state NEW -m tcp --dport 22 -j ACCEPT",
+	"-A INPUT -j REJECT --reject-with icmp-host-prohibited",
+	"-A FORWARD -d 198.51.100.0/24 -i wg0 -o eth0 -j ACCEPT",
+	"-A FORWARD -i eth0 -o wg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
+	"-A FORWARD -j REJECT --reject-with icmp-host-prohibited",
+}
+
+// iptables applies an insert or a delete to the demo's filter table. The nat
+// table is accepted and not modelled: nothing on screen reads it.
+func (f *Fake) iptables(args []string) error {
+	if len(args) >= 2 && args[0] == "-t" {
+		if args[1] != "filter" {
+			return nil
+		}
+		args = args[2:]
+	}
+	if len(args) < 3 {
+		return fmt.Errorf("iptables: not enough arguments")
+	}
+	op, chain, rule := args[0], args[1], "-A "+args[1]+" "+strings.Join(args[2:], " ")
+	switch op {
+	case "-I":
+		// Insert at the top of the chain: right after its policy lines.
+		at := 0
+		for i, line := range f.firewall {
+			if strings.HasPrefix(line, "-P ") || strings.HasPrefix(line, "-N ") {
+				at = i + 1
+			}
+		}
+		for i, line := range f.firewall {
+			if strings.HasPrefix(line, "-A "+chain+" ") {
+				at = i
+				break
+			}
+		}
+		f.firewall = append(f.firewall[:at], append([]string{rule}, f.firewall[at:]...)...)
+	case "-D":
+		for i, line := range f.firewall {
+			if line == rule {
+				f.firewall = append(f.firewall[:i], f.firewall[i+1:]...)
+				return nil
+			}
+		}
+		return fmt.Errorf("iptables: Bad rule (does a matching rule exist in that chain?)")
+	default:
+		return fmt.Errorf("iptables: the demo does not model %s", op)
+	}
+	return nil
+}
+
+// applyConfHooks runs the iptables lines of a conf's PostUp (up) or PostDown
+// (down), the way wg-quick would, with %i replaced by the interface.
+func (f *Fake) applyConfHooks(iface string, up bool) {
+	hook := "PostDown = "
+	if up {
+		hook = "PostUp = "
+	}
+	for _, line := range strings.Split(f.confs[iface], "\n") {
+		cmd, ok := strings.CutPrefix(strings.TrimSpace(line), hook)
+		if !ok || !strings.HasPrefix(cmd, "iptables ") {
+			continue
+		}
+		_ = f.iptables(strings.Fields(strings.ReplaceAll(cmd, "%i", iface))[1:]) // best effort, like wg-quick's own hooks
+	}
+}
+
 func (f *Fake) setUp(iface string, up bool) (string, error) {
 	for i := range f.state.Devices {
 		if f.state.Devices[i].Name == iface {
+			if f.state.Devices[i].Up != up {
+				f.applyConfHooks(iface, up)
+			}
 			f.state.Devices[i].Up = up
 			if up {
 				return "[#] interface " + iface + " up", nil
@@ -421,6 +516,7 @@ func (f *Fake) writeConf(path, conf string) (string, error) {
 			_, _ = fmt.Sscanf(strings.TrimSpace(v), "%d", &port) // best-effort: 0 on mismatch is fine for the fake
 		}
 	}
+	f.confs[name] = conf
 	f.state.Devices = append(f.state.Devices, Device{
 		Name:          name,
 		PublicKey:     demoNewIfacePub,
@@ -567,6 +663,14 @@ func (f *Fake) createUser(name string) (string, error) {
 func demoState() State {
 	now := time.Now()
 	return State{
+		// The demo host: a VM on 198.51.100.0/24 behind eth0, with wg0's
+		// peers on 192.0.2.0/24 and a container bridge that is down.
+		Routes: []Route{
+			{Dst: "default", Gateway: "198.51.100.1", Dev: "eth0"},
+			{Dst: "198.51.100.0/24", Dev: "eth0", Scope: "link"},
+			{Dst: "192.0.2.0/24", Dev: "wg0", Scope: "link"},
+			{Dst: "203.0.113.0/24", Dev: "docker0", Scope: "link", Flags: []string{"linkdown"}},
+		},
 		WGAvailable: true,
 		Devices: []Device{{
 			Name:          "wg0",

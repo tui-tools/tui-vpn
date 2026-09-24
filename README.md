@@ -34,7 +34,7 @@ tui-vpn --demo
 
 ![The status screen: WireGuard interfaces, their state and peer counts](docs/screenshots/tui-vpn-status.png)
 
-- **interfaces** — the WireGuard interfaces on this host, with peer counts and state. `N` creates one from zero, `u` / `d` bring one up or down, `w` saves its runtime config.
+- **interfaces** — the WireGuard interfaces on this host, with peer counts and state, whether the host firewall lets a handshake reach the listen port, and whether the host forwards for the interface. `N` creates one from zero (an endpoint, or a forwarding server with its rules), `u` / `d` bring one up or down, `w` saves its runtime config.
 - **peers** — the peers of the selected interface: endpoint, handshake age, transfer, allowed-ips, keepalive. `a` / `x` add or remove a peer (end the add line with `psk` to also generate a pre-shared key file); `w` saves.
 - **users** — the Headscale users, and the provider they authenticate against, under a panel showing what `/etc/headscale/config.yaml` says: `server_url`, `listen_addr`, `dns.base_domain`, the transport and the OIDC redirect URI it implies, the OIDC issuer and client id, whether a client secret is set, the allow lists, and the state of the `headscale` unit: active or not, enabled at boot or not, the account it runs as, and whether that account owns its state files. `n` creates a user; `S` and `O` configure the control plane; `F` fixes the ownership of headscale's files.
 - **nodes** — the machines registered with Headscale, who owns each, and key expiry. `e` expires one, `m` renames one, `x` deletes one.
@@ -65,6 +65,30 @@ On an empty host, `N` on the interfaces screen walks a three-step wizard: name, 
 1. **Keygen** — one root shell: `sh -c 'umask 077 && wg genkey | tee /etc/wireguard/<if>.key | wg pubkey'`. The private key is written straight into a root-only file inside that shell and never leaves it; only the public key comes back, shown so you can hand it to peers.
 2. **Write the conf** — the file is fed to `install -m 600 /dev/stdin /etc/wireguard/<if>.conf` on stdin, so its content never rides an argv. The conf deliberately contains **no private key**: it carries `PostUp = wg set %i private-key /etc/wireguard/<if>.key`, so wg-quick loads the key from its file at up time. That is why the confirm dialog can show you the whole file.
 3. **Bring it up** — the usual `wg-quick up`, optional; esc leaves the interface created but down.
+
+### A forwarding server (`N`, role step)
+
+After the port, `N` asks for the interface's **role**. An *endpoint* is reached by its peers and nothing else. A *forwarding server* is how peers reach the networks behind this host (a cloud VPC, an office LAN), and it needs three things a bare interface does not have, all found missing on a real Ubuntu 24.04 cloud VM after `N` had created its interface:
+
+- **Which networks it forwards for** — proposed from `ip -j route`: every network this host reaches directly, without the default route, host routes, link-local, links that are down and the WireGuard interfaces themselves. IPv4, in CIDR form; empty means any destination (a full tunnel).
+- **Which NIC the traffic leaves by** — proposed as the default route's device.
+- **The rules**, written into the interface's own conf as `PostUp`/`PostDown`, so they come and go with the interface, and shown whole in the confirm dialog before the file is written:
+
+```ini
+PostUp = sysctl -w net.ipv4.ip_forward=1
+PostUp = iptables -I FORWARD -i %i -o eth0 -d 10.0.0.0/16 -j ACCEPT
+PostUp = iptables -I FORWARD -i eth0 -o %i -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+PostUp = iptables -t nat -I POSTROUTING -s 10.8.0.0/24 -o eth0 -d 10.0.0.0/16 -j MASQUERADE
+PostDown = iptables -D FORWARD -i %i -o eth0 -d 10.0.0.0/16 -j ACCEPT
+PostDown = iptables -D FORWARD -i eth0 -o %i -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+PostDown = iptables -t nat -D POSTROUTING -s 10.8.0.0/24 -o eth0 -d 10.0.0.0/16 -j MASQUERADE
+```
+
+The FORWARD rules are **inserted** (`-I`): the provider's Ubuntu image ends its FORWARD chain in `-j REJECT`, and a rule appended after it would never match. The return path is accepted by connection tracking only, so nothing behind the host can open a connection towards the peers. `ip_forward` is left on at down, because something else on the host may rely on it.
+
+**The listen port.** The same image ends its INPUT chain in `-j REJECT`, so the WireGuard port was closed even with the cloud's own security list open. When the host firewall does not already accept the port (or cannot be read), the wizard offers one more previewed step, `iptables -I INPUT -p udp --dport <port> -j ACCEPT`, and says plainly that it is **not persisted**: it is gone at the next reboot or firewall reload. When [tui-firewall](https://github.com/tui-tools/tui-firewall) is installed, the dialog says to open the port there to keep it; tui-firewall has no non-interactive mode, so tui-vpn does not drive it. Otherwise it points at `netfilter-persistent save`.
+
+The interfaces screen shows both answers for every interface, read from the live ruleset (`iptables -S`, which needs root): **UDP IN** is `open`, `closed` or `?` for the listen port, following jumps into ufw's and docker's chains and ignoring rules that only some senders match; **FORWARD** is whether the FORWARD chain accepts traffic in on the interface.
 
 ### Persist peer changes (`w`)
 
@@ -193,7 +217,7 @@ Prints the versions and machine facts a bug report needs and exits — no UI, no
 tui-vpn --check
 ```
 
-Reads the interfaces and the control plane once and prints a summary as JSON: interface and peer counts, per-peer handshake ages, whether Headscale is present, user and node counts, and a `compat` block naming each backend's version.
+Reads the interfaces and the control plane once and prints a summary as JSON: interface and peer counts, per-peer handshake ages, per-interface `listenPortInput` (what the host's INPUT chain does with a handshake: `accept`, `reject`, `drop`, or `unknown` when the ruleset could not be read, with `firewallChecked` saying which) and `forwarding`, whether Headscale is present, user and node counts, and a `compat` block naming each backend's version.
 
 It also carries a `controlPlane` block read from `/etc/headscale/config.yaml`: `serviceState` and `serviceEnabled` (what `systemctl is-active` and `is-enabled` answer for the unit), `serviceAccount`, the ownership check (`ownershipChecked`, `ownershipOk`, `ownershipIssues`), `oidcClientId`, the scope, whether a client secret is set, and the answers below. With the unit stopped, `headscale.error` is the same sentence the screens show and `headscale.notRunning` is true. `oidcConfigured` now comes from that configuration rather than being guessed; the older guess — inferred from users carrying a provider and nodes registered through OIDC — stays as `oidcInferred`, which is the answer used on a host whose `config.yaml` cannot be read.
 

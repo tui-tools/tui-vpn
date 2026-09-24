@@ -3,7 +3,7 @@
   "name": "tui-vpn",
   "binary": "tui-vpn",
   "tagline": "WireGuard and its control plane, from the terminal",
-  "description": "WireGuard from the terminal, together with the self-hosted control plane that decides who is allowed onto it.\n\nThe status screen reads your interfaces straight from `wg show all dump`: peers, endpoints, handshakes, transfer, allowed IPs and keepalive. Every change, from creating an interface to adding a peer, is previewed as the exact command line and applied only after you confirm it. A private key is never shown, typed, or put on a command line.\n\nWith a [Headscale](https://headscale.net) control plane it also manages users, nodes and pre-auth keys, and configures the server itself: `S` sets how clients reach it (plain http, Let's Encrypt, an own certificate or a reverse proxy, plus the MagicDNS domain), `O` writes the `oidc` section, each as a minimal diff of `/etc/headscale/config.yaml` followed by a restart, or the enable a disabled unit needs. `F` fixes state files the service account does not own. The OIDC client secret is typed masked, written mode 600 to its own file, and never displayed again.\n\nRun it with `--demo` to see every screen with nothing installed.",
+  "description": "WireGuard from the terminal, together with the self-hosted control plane that decides who is allowed onto it.\n\nThe status screen reads your interfaces straight from `wg show all dump`: peers, endpoints, handshakes, transfer, allowed IPs and keepalive. Every change, from creating an interface (a forwarding server included, with its iptables rules) to adding a peer, is previewed as the exact command line and applied only after you confirm it. A private key is never shown, typed, or put on a command line.\n\nWith a [Headscale](https://headscale.net) control plane it also manages users, nodes and pre-auth keys, and configures the server itself: `S` sets how clients reach it (plain http, Let's Encrypt, an own certificate or a reverse proxy, plus the MagicDNS domain), `O` writes the `oidc` section, each as a minimal diff of `/etc/headscale/config.yaml` followed by a restart, or the enable a disabled unit needs. `F` fixes state files the service account does not own. The OIDC client secret is typed masked, written mode 600 to its own file, and never displayed again.\n\nRun it with `--demo` to see every screen with nothing installed.",
   "category": "network",
   "homepage": "https://github.com/tui-tools/tui-vpn",
   "repo": "https://github.com/tui-tools/tui-vpn",
@@ -43,7 +43,7 @@
     },
     {
       "key": "N",
-      "action": "Create a new interface from zero (keygen, conf, optional up)"
+      "action": "Create an interface: endpoint or forwarding server (keygen, conf, port, up)"
     },
     {
       "key": "u / d",
@@ -171,7 +171,7 @@
     }
   },
   "security": {
-    "needs_sudo": "Reading WireGuard needs CAP_NET_ADMIN, the Headscale CLI talks to a root-owned socket, and config.yaml and headscale's state directory are root-only, so those reads escalate; `ip link` and `systemctl is-active` do not. Every mutation escalates, previewed and confirmed first.",
+    "needs_sudo": "Reading WireGuard needs CAP_NET_ADMIN, the Headscale CLI talks to a root-owned socket, and config.yaml, headscale's state directory and the iptables ruleset are root-only, so those reads escalate; `ip` and `systemctl is-active` do not. Every mutation escalates, previewed and confirmed first.",
     "preview_before_run": true,
     "no_daemon": true,
     "no_network": false,

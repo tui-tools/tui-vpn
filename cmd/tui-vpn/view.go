@@ -351,6 +351,10 @@ func (a *app) statusTable() ([]ui.Column, [][]string, []*lipgloss.Style) {
 		{Title: "INTERFACE", Width: 12, Flex: true},
 		{Title: "STATE", Width: 6},
 		{Title: "PORT", Width: 6},
+		// Whether the host firewall lets a handshake reach the port, and
+		// whether the host forwards for the interface.
+		{Title: "UDP IN", Width: 7},
+		{Title: "FORWARD", Width: 8},
 		{Title: "PEERS", Width: 6},
 		{Title: "PUBLIC KEY", Width: 14},
 	}
@@ -358,8 +362,8 @@ func (a *app) statusTable() ([]ui.Column, [][]string, []*lipgloss.Style) {
 	styles := make([]*lipgloss.Style, 0, len(a.state.Devices))
 	for _, d := range a.state.Devices {
 		rows = append(rows, []string{
-			d.Name, upState(d.Up), portOf(d.ListenPort),
-			strconv.Itoa(len(d.Peers)), shortKey(d.PublicKey),
+			d.Name, upState(d.Up), portOf(d.ListenPort), firewallText(d),
+			forwardText(d), strconv.Itoa(len(d.Peers)), shortKey(d.PublicKey),
 		})
 		styles = append(styles, a.stateStyle(d.Up))
 	}
@@ -499,6 +503,14 @@ func (a *app) nodeStyle(now time.Time, n wireguard.Node) *lipgloss.Style {
 }
 
 // --- small formatters ---
+
+// forwardText says whether the host forwards for an interface.
+func forwardText(d wireguard.Device) string {
+	if d.Forwarding {
+		return "yes"
+	}
+	return "-"
+}
 
 func upState(up bool) string {
 	if up {
@@ -670,7 +682,9 @@ func helpKeys() []ui.KeyHint {
 		{Key: "pgup/pgdn", Desc: "scroll a page"},
 		{Key: "r", Desc: "reload"},
 		{Key: "", Desc: ""},
-		{Key: "N", Desc: "create a new interface from zero (keygen, conf, up)"},
+		{Key: "N", Desc: "create a new interface from zero (keygen, conf, up); as"},
+		{Key: "", Desc: "a forwarding server: ip_forward, FORWARD -I, MASQUERADE,"},
+		{Key: "", Desc: "and the listen port opened in INPUT when it is closed"},
 		{Key: "u / d", Desc: "bring the selected interface up / down"},
 		{Key: "w", Desc: "save the interface's runtime config (wg-quick save)"},
 		{Key: "a / x", Desc: "add / remove a peer on the interface (add: end with \"psk\""},

@@ -38,6 +38,9 @@ var searchPaths = map[string][]string{
 	// writes for it; chown is the previewed fix when the answer is wrong.
 	"stat":  {"/usr/bin/stat", "/bin/stat"},
 	"chown": {"/usr/bin/chown", "/bin/chown"},
+	// iptables reads the host firewall (is a listen port open, does the host
+	// forward for an interface) and opens a listen port when asked.
+	"iptables": iptablesSearchPaths,
 }
 
 // privilegedRead marks the binaries whose reads need root. Reading a WireGuard
@@ -56,6 +59,9 @@ var privilegedRead = map[string]bool{
 	// The state directory is mode 750 and owned by the service account, so
 	// only root can see inside it.
 	"stat": true,
+	// Reading the ruleset needs root: unprivileged, iptables refuses with
+	// "you must be root".
+	"iptables": true,
 }
 
 // neverEscalate marks the binaries that must run as the invoking user even
@@ -72,6 +78,7 @@ var installHints = map[string]string{
 	"headscale": "install headscale, or run without a control plane",
 	"ip":        "install iproute2",
 	"curl":      "install curl to validate an OIDC issuer",
+	"iptables":  "install iptables to read and open the host firewall",
 }
 
 // Real is the backend that drives the machine. It is the tool's only exec site:
@@ -196,9 +203,30 @@ func (r *Real) Load(ctx context.Context) (State, error) {
 		}
 		r.annotateLinks(ctx, &state)
 	}
+	r.loadHostNet(ctx, &state)
 
 	r.loadHeadscale(ctx, &state)
 	return state, nil
+}
+
+// loadHostNet reads the routing table and the host firewall. Both are best
+// effort: a failed route read proposes nothing, and a failed firewall read
+// (usually: no root) leaves every port verdict unknown rather than open.
+func (r *Real) loadHostNet(ctx context.Context, state *State) {
+	if run, err := r.runnerFor("ip"); err == nil {
+		if out, err := run.Read(ctx, "ip", "-j", "route"); err == nil {
+			state.Routes, _ = ParseRoutes([]byte(out))
+		}
+	}
+	if run, err := r.runnerFor("iptables"); err != nil {
+		state.Firewall = Firewall{Error: runner.FirstLine(err.Error())}
+	} else if out, err := run.Read(ctx, "iptables", "-S"); err != nil {
+		state.Firewall = Firewall{Error: runner.FirstLine(err.Error())}
+	} else {
+		state.Firewall = ParseIptablesRules(out)
+	}
+	state.TUIFirewall = runner.Available("tui-firewall", TUIFirewallSearchPaths...)
+	state.annotateFirewall()
 }
 
 // annotateLinks corrects each device's Up flag from `ip link`, a read no

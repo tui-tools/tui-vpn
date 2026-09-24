@@ -9,8 +9,9 @@
 // the confirm dialog showed is provably the command that ran. It drives a
 // handful of programs — `wg`, `wg-quick`, `headscale`, read-only `ip`,
 // `sh`/`install`/`cat` for the bootstrap and control-plane-configuration
-// flows, `systemctl` for the headscale unit, and `curl` for the one read that
-// leaves the machine (an IdP's discovery document) — but every one of them
+// flows, `systemctl` for the headscale unit, `iptables` for the host
+// firewall, and `curl` for the one read that leaves the machine (an IdP's
+// discovery document) — but every one of them
 // goes through the same runner boundary.
 //
 // PRIVACY: a private key never leaves this package on an argv or in any
@@ -87,6 +88,13 @@ type Device struct {
 	// Up reports whether the link is up, as `ip link` sees it.
 	Up    bool   `json:"up"`
 	Peers []Peer `json:"peers"`
+	// Forwarding reports that the host's FORWARD chain accepts traffic
+	// coming in on this interface: it is a forwarding server (see
+	// ForwardingRules). Read from the live ruleset.
+	Forwarding bool `json:"forwarding"`
+	// PortVerdict is what the host's INPUT chain does with a handshake to
+	// ListenPort; unknown when the ruleset could not be read.
+	PortVerdict Verdict `json:"portVerdict,omitempty"`
 }
 
 // Peer is one entry under an interface.
@@ -197,6 +205,28 @@ type State struct {
 	Devices []Device `json:"devices"`
 
 	Headscale Headscale `json:"headscale"`
+
+	// Routes is `ip -j route`, the source of the networks and the egress a
+	// new forwarding server proposes. Firewall is `iptables -S`. Neither is
+	// serialised: they are addresses of this host.
+	Routes   []Route  `json:"-"`
+	Firewall Firewall `json:"-"`
+	// TUIFirewall reports that tui-firewall is installed: the tool that
+	// opens a port for good, which the listen-port step names.
+	TUIFirewall bool `json:"-"`
+}
+
+// annotateFirewall fills each device's forwarding flag and listen-port
+// verdict from the firewall that was read.
+func (s *State) annotateFirewall() {
+	for i := range s.Devices {
+		d := &s.Devices[i]
+		d.Forwarding = s.Firewall.Forwards(d.Name)
+		d.PortVerdict = VerdictUnknown
+		if d.ListenPort > 0 {
+			d.PortVerdict = s.Firewall.UDPPortVerdict(d.ListenPort)
+		}
+	}
 }
 
 // Device returns the interface by name.
@@ -401,6 +431,13 @@ func BuildGenerateInterfaceKey(iface string) (runner.Command, error) {
 // inline the private key (root-only, mode 600) — standard wg-quick behaviour,
 // warned about in that action's confirm dialog.
 func InterfaceConf(iface, address string, listenPort int) (string, error) {
+	return InterfaceConfWith(iface, address, listenPort, nil)
+}
+
+// InterfaceConfWith is InterfaceConf for an interface that may be a
+// forwarding server: with a spec, the PostUp and PostDown lines of
+// ForwardingRules follow the key line.
+func InterfaceConfWith(iface, address string, listenPort int, fwd *ForwardSpec) (string, error) {
 	if !ValidInterface(iface) {
 		return "", fmt.Errorf("not a valid interface name: %q", iface)
 	}
@@ -410,13 +447,31 @@ func InterfaceConf(iface, address string, listenPort int) (string, error) {
 	if listenPort < 1 || listenPort > 65535 {
 		return "", fmt.Errorf("not a valid listen port: %d", listenPort)
 	}
-	return fmt.Sprintf(`[Interface]
+	conf := fmt.Sprintf(`[Interface]
 # The private key lives in %s (root, mode 600) and is loaded
 # at up time; this file deliberately contains no secret.
 Address = %s
 ListenPort = %d
 PostUp = wg set %%i private-key %s
-`, KeyPath(iface), address, listenPort, KeyPath(iface)), nil
+`, KeyPath(iface), address, listenPort, KeyPath(iface))
+	if fwd == nil {
+		return conf, nil
+	}
+	up, down, err := ForwardingRules(address, *fwd)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	b.WriteString(conf)
+	b.WriteString("# Forwarding server: peers reach the networks behind this host through " +
+		fwd.Egress + ".\n# ip_forward is left on at down; something else may rely on it.\n")
+	for _, line := range up {
+		b.WriteString("PostUp = " + line + "\n")
+	}
+	for _, line := range down {
+		b.WriteString("PostDown = " + line + "\n")
+	}
+	return b.String(), nil
 }
 
 // BuildWriteInterfaceConf assembles the install that writes the configuration

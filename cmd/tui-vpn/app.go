@@ -39,6 +39,9 @@ const (
 	inputNewIfaceName
 	inputNewIfaceAddress
 	inputNewIfacePort
+	// A forwarding server's two extra wizard steps.
+	inputNewIfaceNetworks
+	inputNewIfaceEgress
 	inputCreatePreAuthKey
 	inputRenameNode
 	// The server-settings form, in the order the fields are asked for; the
@@ -72,6 +75,8 @@ const (
 	pickerACMEChallenge
 	// The OIDC form's first step: which identity provider.
 	pickerOIDCProvider
+	// The new-interface wizard's role: endpoint or forwarding server.
+	pickerIfaceRole
 )
 
 // pickerYes and pickerNo are the two options of a boolean picker.
@@ -102,8 +107,12 @@ type app struct {
 	picker        ui.Picker
 	pickerPurpose pickerPurpose
 
-	// draft collects the create-interface wizard's answers across its inputs.
-	draft struct{ name, address, port string }
+	// draft collects the create-interface wizard's answers across its inputs;
+	// forward is set when the interface is a forwarding server.
+	draft struct {
+		name, address, port string
+		forward             *wireguard.ForwardSpec
+	}
 	// cpDraft collects the control-plane forms' answers across their steps.
 	cpDraft controlPlaneDraft
 	// after, when set, runs once on the next successful command result. It is
@@ -344,6 +353,10 @@ func (a *app) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, a.wizardTookAddress(value)
 	case inputNewIfacePort:
 		return a, a.wizardTookPort(value)
+	case inputNewIfaceNetworks:
+		return a, a.wizardTookNetworks(value)
+	case inputNewIfaceEgress:
+		return a, a.wizardTookEgress(value)
 	case inputCreatePreAuthKey:
 		return a, a.openConfirmPreAuthKey(value)
 	case inputRenameNode:
@@ -382,6 +395,8 @@ func (a *app) handlePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, a.tookChallenge(choice)
 	case pickerOIDCProvider:
 		return a, a.tookOIDCProvider(choice)
+	case pickerIfaceRole:
+		return a, a.wizardTookRole(choice)
 	}
 	return a, nil
 }
@@ -571,9 +586,11 @@ func (a *app) headscaleAnswers() bool {
 // startCreateInterface opens the first step of the create-interface wizard.
 func (a *app) startCreateInterface() tea.Cmd {
 	a.draft.name, a.draft.address, a.draft.port = "", "", ""
+	a.draft.forward = nil
 	a.input = ui.NewInput("New interface — name", "wg0", "")
 	a.input.Help = "The interface to create: its key pair is generated into a root-only file, " +
-		"its conf is written to /etc/wireguard, and you can bring it up. Three previewed steps."
+		"its conf is written to /etc/wireguard, and you can bring it up. Every step is " +
+		"previewed and confirmed."
 	a.inputPurpose = inputNewIfaceName
 	a.mode = modeInput
 	return nil
@@ -611,10 +628,7 @@ func (a *app) wizardTookAddress(address string) tea.Cmd {
 	return nil
 }
 
-// wizardTookPort validates step 3 and opens the first confirm: the keygen.
-// The key pair is generated entirely inside one root shell at the exec site —
-// the private key goes straight into a root-only file and only the public key
-// comes back.
+// wizardTookPort validates step 3 and asks for the interface's role.
 func (a *app) wizardTookPort(port string) tea.Cmd {
 	n, err := strconv.Atoi(port)
 	if err != nil || n < 1 || n > 65535 {
@@ -622,12 +636,23 @@ func (a *app) wizardTookPort(port string) tea.Cmd {
 		return nil
 	}
 	a.draft.port = port
+	a.picker = ui.NewPicker("New interface — role", []string{roleEndpoint, roleForwarder},
+		roleEndpoint)
+	a.pickerPurpose = pickerIfaceRole
+	a.mode = modePicker
+	return nil
+}
+
+// confirmKeygen opens the first confirm: the keygen. The key pair is
+// generated entirely inside one root shell at the exec site — the private key
+// goes straight into a root-only file and only the public key comes back.
+func (a *app) confirmKeygen() tea.Cmd {
 	name := a.draft.name
 	keygen, err := wireguard.BuildGenerateInterfaceKey(name)
 	cmd := a.openConfirmWith(
-		"Step 1 of 3 — generate the key pair for "+name+". The private key is written to "+
-			wireguard.KeyPath(name)+" (root, mode 600) inside this one shell and never "+
-			"leaves it; only the public key is printed.",
+		fmt.Sprintf("Step 1 of %d — generate the key pair for ", a.wizardSteps())+name+
+			". The private key is written to "+wireguard.KeyPath(name)+" (root, mode 600) "+
+			"inside this one shell and never leaves it; only the public key is printed.",
 		keygen, err)
 	if a.mode == modeConfirm {
 		a.after = func(output string) tea.Cmd { return a.confirmWriteConf(lastLine(output)) }
@@ -636,33 +661,46 @@ func (a *app) wizardTookPort(port string) tea.Cmd {
 }
 
 // confirmWriteConf is step 2: write the conf file. With the PostUp design the
-// file contains no secret, so the dialog can show it whole.
+// file contains no secret, so the dialog can show it whole — the forwarding
+// rules of a forwarding server included.
 func (a *app) confirmWriteConf(publicKey string) tea.Cmd {
 	name, address := a.draft.name, a.draft.address
 	port, _ := strconv.Atoi(a.draft.port)
-	conf, err := wireguard.InterfaceConf(name, address, port)
+	conf, err := wireguard.InterfaceConfWith(name, address, port, a.draft.forward)
 	if err != nil {
 		a.setStatus(ui.StatusError, err.Error())
 		return nil
 	}
-	body := "Step 2 of 3 — write " + wireguard.ConfPath(name) + " (mode 600, via stdin). " +
-		"It references the key file and contains no private key.\n\n" + conf
+	body := fmt.Sprintf("Step 2 of %d — write ", a.wizardSteps()) + wireguard.ConfPath(name) +
+		" (mode 600, via stdin). It references the key file and contains no private key."
+	if a.draft.forward != nil {
+		body += "\n\n" + forwardExplanation(*a.draft.forward)
+	}
+	body += "\n\n" + conf
 	if publicKey != "" {
 		body = "Interface public key (share it with peers):\n  " + publicKey + "\n\n" + body
 	}
 	write, err := wireguard.BuildWriteInterfaceConf(name, conf)
 	cmd := a.openConfirmWith(body, write, err)
 	if a.mode == modeConfirm {
-		a.after = func(string) tea.Cmd { return a.confirmOfferUp(name) }
+		a.after = func(string) tea.Cmd {
+			if a.needsPortStep() {
+				return a.confirmOpenPort(name, port)
+			}
+			return a.confirmOfferUp(name)
+		}
 	}
 	return cmd
 }
 
-// confirmOfferUp is step 3, and optional: esc leaves the new interface down.
+// confirmOfferUp is the last step, and optional: esc leaves the new interface
+// down.
 func (a *app) confirmOfferUp(name string) tea.Cmd {
 	up, err := wireguard.BuildInterfaceUp(name)
+	steps := a.wizardSteps()
 	return a.openConfirmWith(
-		"Step 3 of 3 (optional) — bring "+name+" up now. Esc leaves it created but down.",
+		fmt.Sprintf("Step %d of %d (optional) — bring ", steps, steps)+name+
+			" up now. Esc leaves it created but down.",
 		up, err)
 }
 
