@@ -296,8 +296,8 @@ type TransportSettings struct {
 // CheckServerURL applies the transport's rules to a server_url on its own, so
 // the form can refuse it at the step it was typed rather than at the end.
 func (s TransportSettings) CheckServerURL() error {
-	if !ValidServerURL(s.ServerURL) {
-		return fmt.Errorf("not a valid server_url: %q", s.ServerURL)
+	if problem := ServerURLProblem(s.ServerURL); problem != "" {
+		return fmt.Errorf("not a valid server_url: %s", problem)
 	}
 	scheme := s.Transport.Scheme()
 	if !strings.HasPrefix(strings.ToLower(s.ServerURL), scheme+"://") {
@@ -339,8 +339,8 @@ func hostPort(rawURL string) string {
 // CheckListenAddr applies the transport's rule to listen_addr: behind a
 // reverse proxy headscale binds loopback, so nothing but the proxy reaches it.
 func (s TransportSettings) CheckListenAddr() error {
-	if !ValidListenAddr(s.ListenAddr) {
-		return fmt.Errorf("not a valid listen_addr: %q", s.ListenAddr)
+	if problem := ListenAddrProblem(s.ListenAddr); problem != "" {
+		return fmt.Errorf("not a valid listen_addr: %s", problem)
 	}
 	if s.Transport == TransportReverseProxy && !IsLoopbackHost(ListenHost(s.ListenAddr)) {
 		return fmt.Errorf("behind a reverse proxy headscale binds loopback "+

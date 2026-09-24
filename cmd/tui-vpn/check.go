@@ -110,8 +110,11 @@ type cpSummary struct {
 	OwnershipChecked bool                       `json:"ownershipChecked"`
 	OwnershipOK      bool                       `json:"ownershipOk"`
 	OwnershipIssues  []wireguard.OwnershipIssue `json:"ownershipIssues,omitempty"`
-	// ServerURLSet reports that a server_url is configured at all.
-	ServerURLSet bool `json:"serverUrlSet"`
+	// ServerURLSet reports that a server_url is configured at all, and
+	// ServerURLValid that its host is an address that parses or a DNS name
+	// (a mistyped IP such as 203.0.113.1000 is neither).
+	ServerURLSet   bool `json:"serverUrlSet"`
+	ServerURLValid bool `json:"serverUrlValid"`
 	// ServerURLHTTPS and ServerURLLoopback are what the URL itself is not
 	// printed for: whether it is https, which most IdPs require of a redirect
 	// target, and whether it points at loopback, which no client's browser can
@@ -231,6 +234,7 @@ func summariseHS(hs wireguard.Headscale) hsSummary {
 			OwnershipOK:            cp.Ownership.OK(),
 			OwnershipIssues:        cp.Ownership.Issues,
 			ServerURLSet:           cp.ServerURL != "",
+			ServerURLValid:         wireguard.ValidServerURL(cp.ServerURL),
 			ServerURLHTTPS:         wireguard.ServerURLIsHTTPS(cp.ServerURL),
 			ServerURLLoopback:      wireguard.IsLoopbackHost(wireguard.URLHost(cp.ServerURL)),
 			ServerURLWarning:       wireguard.ServerURLWarning(cp.ServerURL, cp.OIDC.Configured()),

@@ -327,10 +327,10 @@ func ValidAccountName(s string) bool { return accountNamePattern.MatchString(s) 
 // become a second argument or break the YAML line it is written to.
 var serverURLPattern = regexp.MustCompile(`^https?://[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+$`)
 
-// ValidServerURL reports whether s is a plausible base URL.
-func ValidServerURL(s string) bool {
-	return s != "" && !strings.Contains(s, "\n") && serverURLPattern.MatchString(s)
-}
+// ValidServerURL reports whether s is a plausible base URL: safe characters,
+// and a host that is an IP address that parses or a DNS name (see
+// ServerURLProblem for the reason when it is not).
+func ValidServerURL(s string) bool { return ServerURLProblem(s) == "" }
 
 // OIDCCallbackPath is where headscale receives the IdP's redirect after a
 // browser login.
@@ -468,14 +468,9 @@ func ListenHost(addr string) string {
 // listenAddrPattern is a bind address: an optional host and a mandatory port.
 var listenAddrPattern = regexp.MustCompile(`^[A-Za-z0-9._\[\]:-]*:[0-9]{1,5}$`)
 
-// ValidListenAddr reports whether s is a plausible listen address.
-func ValidListenAddr(s string) bool {
-	if s == "" || strings.HasPrefix(s, "-") || !listenAddrPattern.MatchString(s) {
-		return false
-	}
-	port, err := strconv.Atoi(s[strings.LastIndexByte(s, ':')+1:])
-	return err == nil && port >= 1 && port <= 65535
-}
+// ValidListenAddr reports whether s is a plausible listen address (see
+// ListenAddrProblem for the reason when it is not).
+func ValidListenAddr(s string) bool { return ListenAddrProblem(s) == "" }
 
 // ValidIssuerURL reports whether s is a plausible OIDC issuer URL. It is the
 // same shape as a server URL: the difference is only what it points at.

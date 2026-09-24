@@ -101,8 +101,10 @@ func (a *app) startOIDCSettings() tea.Cmd {
 
 // tookOIDCIssuer validates the issuer and asks for the client id.
 func (a *app) tookOIDCIssuer(value string) tea.Cmd {
-	if !wireguard.ValidIssuerURL(value) {
-		a.setStatusf(ui.StatusError, "not a valid issuer URL: %q", value)
+	if problem := wireguard.ServerURLProblem(value); problem != "" {
+		// The same host check as server_url: an issuer typed as a mistyped IP
+		// address would only fail later, at every login.
+		a.setStatus(ui.StatusError, "not a valid issuer URL: "+problem)
 		return nil
 	}
 	a.cpDraft.issuer = value
@@ -465,6 +467,13 @@ func (a *app) confirmPlainRestart(step string) tea.Cmd {
 // start with at all.
 func (a *app) serverURLWarning(url string) string {
 	warnings := []string{}
+	if url != "" {
+		// A malformed host already in the file (written before the check
+		// existed, or by hand) is the first thing worth flagging.
+		if problem := wireguard.ServerURLProblem(url); problem != "" {
+			warnings = append(warnings, "server_url is not valid: "+problem)
+		}
+	}
 	if w := wireguard.ServerURLWarning(url,
 		a.state.Headscale.ControlPlane.OIDC.Configured()); w != "" {
 		warnings = append(warnings, w)

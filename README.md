@@ -93,6 +93,8 @@ Every transport ends with **`dns.base_domain`**, the MagicDNS domain nodes are n
 
 A refused answer reopens its own step with the reason on top and what you typed still in it.
 
+**The host is checked, not only the characters.** headscale does not validate the host of `server_url`, so a public IP typed with one digit too many (`http://203.0.113.1000:443`) used to be written and served, and every client then failed on a DNS lookup for a name that looks like an address. A host has to be an IP address that parses, or a DNS name whose last label is not all digits (no top-level domain is numeric). The same check applies to `listen_addr`'s address part and to the OIDC issuer, and a malformed value already in the file is flagged in the panel and shown with its problem when `S` proposes it.
+
 **Plain http is a real option, not a mistake.** The Tailscale control protocol runs over Noise, so everything between clients and headscale is encrypted and authenticated whatever the URL scheme. The one thing that needs https is a browser: an OIDC login redirects to `<server_url>/oidc/callback`, and Google and most other IdPs refuse a redirect URI that is plain http or names a raw IP. So the panel explains plain http instead of warning about it, and only when OIDC is configured do the form and the confirm dialog say, before and after the answer, that browser logins will fail. The panel also shows that redirect URI, next to whether an IdP will accept it, because it is the value an OAuth client has to be registered with.
 
 The painless case, a server reached by IP: pick **plain http**, type `http://203.0.113.10:443`, accept the proposed `0.0.0.0:443`, and give a private base domain such as `tailnet.internal`. The diff is three lines.
