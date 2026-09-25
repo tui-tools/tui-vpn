@@ -1,4 +1,4 @@
-# GoReleaser configuration for tui-vpn.
+# GoReleaser configuration for tui-wireguard.
 #
 # One repository, one binary, one tag series:
 #
@@ -10,16 +10,16 @@
 # template in tui-kit/templates/.goreleaser.yaml.
 version: 2
 
-project_name: tui-vpn
+project_name: tui-wireguard
 
 before:
   hooks:
     - go mod download
 
 builds:
-  - id: tui-vpn
-    main: ./cmd/tui-vpn
-    binary: tui-vpn
+  - id: tui-wireguard
+    main: ./cmd/tui-wireguard
+    binary: tui-wireguard
     env:
       # Static binaries: no libc dependency, one file to copy anywhere.
       - CGO_ENABLED=0
@@ -34,9 +34,9 @@ builds:
       - -s -w -X main.version={{ .Version }}
 
 archives:
-  - id: tui-vpn
+  - id: tui-wireguard
     ids:
-      - tui-vpn
+      - tui-wireguard
     name_template: >-
       {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
     formats:
@@ -55,22 +55,22 @@ archives:
 # manifest's tagline. tui-kit/tools/check-nfpm.py asserts the two are
 # identical, and `make manifest` runs it, so the copy cannot drift.
 nfpms:
-  - id: tui-vpn
+  - id: tui-wireguard
     ids:
-      - tui-vpn
-    package_name: tui-vpn
+      - tui-wireguard
+    package_name: tui-wireguard
     formats:
       - deb
       - rpm
       - archlinux
     # Each ecosystem's own naming, so the files look native where they land:
-    # tui-vpn_0.1.0_amd64.deb, tui-vpn-0.1.0.x86_64.rpm,
-    # tui-vpn-0.1.0-1-x86_64.pkg.tar.zst.
+    # tui-wireguard_0.1.0_amd64.deb, tui-wireguard-0.1.0.x86_64.rpm,
+    # tui-wireguard-0.1.0-1-x86_64.pkg.tar.zst.
     file_name_template: "{{ .ConventionalFileName }}"
     vendor: tui-tools
-    homepage: https://tui.tools/tools/tui-vpn/
+    homepage: https://tui.tools/tools/tui-wireguard/
     maintainer: tui-tools <maintainers@tui.tools>
-    description: "WireGuard and its control plane, from the terminal"
+    description: "WireGuard interfaces and peers, from the terminal"
     license: MIT
     # The binary belongs in the distribution's own path, not /usr/local: it
     # arrives through the package manager, so the package manager owns it.
@@ -79,22 +79,48 @@ nfpms:
     priority: optional
     contents:
       - src: README.md
-        dst: /usr/share/doc/tui-vpn/README.md
+        dst: /usr/share/doc/tui-wireguard/README.md
       - src: LICENSE
-        dst: /usr/share/doc/tui-vpn/LICENSE
+        dst: /usr/share/doc/tui-wireguard/LICENSE
       - src: examples/config.toml
-        dst: /usr/share/doc/tui-vpn/config.toml
+        dst: /usr/share/doc/tui-wireguard/config.toml
     # The package owns the binary name, so anything else shipping the same
     # command — an AUR -bin build, a hand-rolled local package — is a
     # conflict rather than a silent overwrite.
+    #
+    # It also takes over from tui-vpn, the name this tool had up to 0.4.x.
+    # Provides, conflicts and replaces name the old package so the machine's
+    # own upgrade moves to this one: pacman -Syu offers the replacement, dnf
+    # upgrade obsoletes it (nfpm writes `replaces` as rpm's Obsoletes), and
+    # apt removes it when this package is installed. The constraints on deb
+    # and rpm are versioned (below 0.5.0, the first release under this name)
+    # so a transitional tui-vpn 0.5.0 that depends on tui-wireguard, which
+    # is what makes a plain `apt upgrade` move across, can sit next to it.
     provides:
+      - tui-wireguard
       - tui-vpn
     conflicts:
-      - tui-vpn-bin
+      - tui-wireguard-bin
+      - tui-vpn
+    replaces:
+      - tui-vpn
+    overrides:
+      deb:
+        conflicts:
+          - tui-wireguard-bin
+          - tui-vpn (<< 0.5.0)
+        replaces:
+          - tui-vpn (<< 0.5.0)
+      rpm:
+        conflicts:
+          - tui-wireguard-bin
+          - tui-vpn < 0.5.0
+        replaces:
+          - tui-vpn < 0.5.0
     rpm:
       group: Applications/System
     archlinux:
-      pkgbase: tui-vpn
+      pkgbase: tui-wireguard
       packager: tui-tools <maintainers@tui.tools>
 
 checksum:
@@ -162,7 +188,7 @@ release:
   #
   # A lightweight tag leaves it blank, which is the reminder to write one.
   header: |
-    ## tui-vpn {{ .Tag }}
+    ## tui-wireguard {{ .Tag }}
 
     {{ .TagContents }}
 

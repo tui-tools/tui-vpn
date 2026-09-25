@@ -1,77 +1,70 @@
 <img src="assets/logo.png" alt="tui-tools" width="240">
 
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/tui-tools/tui-vpn/badge)](https://scorecard.dev/viewer/?uri=github.com/tui-tools/tui-vpn)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/tui-tools/tui-wireguard/badge)](https://scorecard.dev/viewer/?uri=github.com/tui-tools/tui-wireguard)
 
-> **Beta, and unreleased.** This tool is private while its control-plane path is validated against a real Headscale and an IdP in the lab. Flags and keys may move without notice.
+> **Beta.** Flags and keys may still move between 0.x releases.
 
-# tui-vpn
+# tui-wireguard
 
-WireGuard and its control plane, from the terminal.
+WireGuard interfaces and peers, from the terminal.
 
-tui-vpn reads the WireGuard interfaces on a host straight from `wg show all dump` — peers, endpoints, the latest handshake, transfer counters, allowed IPs and keepalive — and, when a self-hosted [Headscale](https://headscale.net) control plane is present, the users, nodes and pre-authentication keys that decide who is allowed onto the network.
+tui-wireguard reads the WireGuard interfaces on a host straight from `wg show all dump` (peers, endpoints, the latest handshake, transfer counters, allowed IPs and keepalive) together with the host around them: whether the firewall lets a handshake reach the listen port, and whether the host forwards for an interface.
 
-It manages as well as reads. Creating an interface from zero, bringing one up or down, adding or removing a peer, saving the runtime config, expiring, renaming or deleting a node, creating a user or a pre-auth key — every change is shown as the exact command line first and applied only after you confirm it. There is one place a process is ever started, `internal/wireguard`, so the command the dialog showed is provably the command that runs.
-
-## Identity is OIDC, not a web admin
-
-User login is deliberately not in this tool. Identity is OpenID Connect, done in the client's own browser against your IdP; Headscale mirrors the users and nodes the IdP authorises. The Headscale server exposes no web admin, which is the whole point of the design — there is no console to log into, and tui-vpn does not pretend to be one.
-
-What tui-vpn does own is the *configuration* of that identity. See [Identity provider (OIDC)](#identity-provider-oidc) below: `S` and `O` on the users screen write `/etc/headscale/config.yaml` for you, previewing the exact lines they change.
+It manages as well as reads. Creating an interface from zero (an endpoint, or a forwarding server with its NAT rules and listen port), bringing one up or down, adding or removing a peer, saving the runtime config: every change is shown as the exact command line first and applied only after you confirm it. There is one place a process is ever started, `internal/wireguard`, so the command the dialog showed is provably the command that runs.
 
 A private key is never shown, typed, or put on a command line. Adding a peer needs only its public key; a pre-shared key is passed to `wg` as a file it opens itself, never as an argument (a command line is visible in `ps` to every user on the machine).
+
+## Formerly tui-vpn
+
+This tool was called tui-vpn up to 0.4.x. Two things changed with the name:
+
+- **Headscale moved to tui-tailscale.** The users, nodes, pre-auth keys, routes, transport and OIDC screens (`S`, `O`, `F`, `r`) are now part of [tui-tailscale](https://tui.tools/tools/tui-tailscale/), which manages both sides of a self-hosted tailnet: the Headscale control plane and the Tailscale node. tui-wireguard is plain WireGuard.
+- **The package takes over from tui-vpn.** `tui-wireguard` provides, conflicts with and replaces `tui-vpn`, so installing it removes tui-vpn, `dnf upgrade` obsoletes it and `pacman -Syu` offers the replacement. Your configuration is still read from the old place: `/etc/tui-vpn/config.toml`, `~/.config/tui-vpn/config.toml` and `TUI_VPN_*` apply below their `tui-wireguard` counterparts, and the status line (and `--report`) says when an old file was used, so you can move it.
 
 ## Try it with nothing installed
 
 ```sh
-tui-vpn --demo
+tui-wireguard --demo
 ```
 
-`--demo` runs every screen against a fake WireGuard and a fake Headscale: one interface with two peers — one mid-handshake, one that has never connected — and a control plane with two users, four nodes (one of them a subnet router with a route approved, one pending and an exit node waiting) and a pre-auth key. The interface is a forwarding server with its port open in the demo's firewall. Nothing on the host is read and nothing is changed.
+`--demo` runs every screen against a fake WireGuard host: one forwarding interface with two peers, one mid-handshake and one that has never connected, on a host whose firewall ends INPUT and FORWARD in REJECT with the interface's port opened above it. Nothing on the host is read and nothing is changed.
 
 ## Screens
 
-`tab` (or `1`…`5`) switches between them:
+`tab` (or `1` / `2`) switches between them:
 
-![The status screen: WireGuard interfaces, their state, whether the host firewall opens the port and forwards for them, and peer counts](docs/screenshots/tui-vpn-status.png)
+![The interfaces screen: state, listen port, whether the host firewall opens the port and forwards for the interface, and peer counts](docs/screenshots/tui-wireguard-status.png)
 
-- **interfaces** — the WireGuard interfaces on this host, with peer counts and state, whether the host firewall lets a handshake reach the listen port, and whether the host forwards for the interface. `N` creates one from zero (an endpoint, or a forwarding server with its rules), `u` / `d` bring one up or down, `w` saves its runtime config.
-- **peers** — the peers of the selected interface: endpoint, handshake age, transfer, allowed-ips, keepalive. `a` / `x` add or remove a peer (end the add line with `psk` to also generate a pre-shared key file); `w` saves.
-- **users** — the Headscale users, and the provider they authenticate against, under a panel showing what `/etc/headscale/config.yaml` says: `server_url`, `listen_addr`, `dns.base_domain`, the transport and the OIDC redirect URI it implies, the OIDC issuer and client id, whether a client secret is set, the allow lists, and the state of the `headscale` unit: active or not, enabled at boot or not, the account it runs as, and whether that account owns its state files. `n` creates a user; `S` and `O` configure the control plane; `F` fixes the ownership of headscale's files.
-- **nodes** — the machines registered with Headscale, who owns each, key expiry, and the routes each advertises with whether they are approved. `r` approves or revokes routes, `e` expires a node, `m` renames one, `x` deletes one (`ctrl+r` reloads here, since `r` is taken).
-- **preauth keys** — the keys that let a machine register itself, shown by prefix only. `n` creates one, shown exactly once.
+- **interfaces**: the WireGuard interfaces on this host, with peer counts and state, whether the host firewall lets a handshake reach the listen port, and whether the host forwards for the interface. `N` creates one from zero (an endpoint, or a forwarding server with its rules), `u` / `d` bring one up or down, `w` saves its runtime config. An interface that is down has no link and no line in `wg show`, so it is listed from its file in `/etc/wireguard` instead, and `u` brings it back.
+- **peers**: the peers of the interface selected on the first screen: endpoint, handshake age, transfer, allowed IPs, keepalive. `a` / `x` add or remove a peer (end the add line with `psk` to also generate a pre-shared key file); `w` saves.
 
-**When the headscale unit is not running**, the users, nodes and keys screens do not ask the CLI (it talks to the running server over a socket, so every list would fail) and say what to do instead: `headscale is not running · S configures and starts it` on a fresh install, `systemctl start headscale` when `server_url` is already set up, and `journalctl -u headscale` when the unit has failed. `S`, `O` and `F` keep working, since they only need the configuration file. When the CLI fails for another reason, the screen shows the `error` field of the JSON it printed rather than its first raw line.
-
-![The peers screen: endpoints, handshake age and transfer for the selected interface](docs/screenshots/tui-vpn-peers.png)
-
-![The users screen, under the control-plane panel: the unit's state and account, file ownership, server_url, transport, base domain, the OIDC redirect URI, issuer and client id, and that a client secret is set](docs/screenshots/tui-vpn-users.png)
-
-The panel is the answer to what the identity note used to leave hanging: which IdP, reachable at which URL, and whether a secret is set — never what it is.
-
-![The Headscale nodes screen: who owns each node, its state, and its advertised routes, spelled out for the selected subnet router](docs/screenshots/tui-vpn-headscale.png)
+![The peers screen: endpoints, handshake age, transfer and allowed IPs for the selected interface](docs/screenshots/tui-wireguard-peers.png)
 
 Every mutation opens a confirm dialog with the exact command before it runs.
 
-![The help screen: keys, and how identity works over OIDC](docs/screenshots/tui-vpn-help.png)
+![Creating a forwarding server: the conf, with its PostUp and PostDown rules, previewed before it is written](docs/screenshots/tui-wireguard-new.png)
+
+![The help screen: every key, and what each change does before it runs](docs/screenshots/tui-wireguard-help.png)
 
 ## Manage, not view
 
-Beyond up/down and peer add/remove, tui-vpn can bootstrap and maintain a WireGuard host — always through the same rule: preview the exact command, confirm, run.
+Beyond up/down and peer add/remove, tui-wireguard can bootstrap and maintain a WireGuard host, always through the same rule: preview the exact command, confirm, run.
 
 ### Create an interface from zero (`N`)
 
-On an empty host, `N` on the interfaces screen walks a three-step wizard: name, address (CIDR) and listen port, then three previewed commands.
+On an empty host, `N` on the interfaces screen walks a short wizard (name, address in CIDR form, listen port, role) and then previews each command in turn.
 
-1. **Keygen** — one root shell: `sh -c 'umask 077 && wg genkey | tee /etc/wireguard/<if>.key | wg pubkey'`. The private key is written straight into a root-only file inside that shell and never leaves it; only the public key comes back, shown so you can hand it to peers.
-2. **Write the conf** — the file is fed to `install -m 600 /dev/stdin /etc/wireguard/<if>.conf` on stdin, so its content never rides an argv. The conf deliberately contains **no private key**: it carries `PostUp = wg set %i private-key /etc/wireguard/<if>.key`, so wg-quick loads the key from its file at up time. That is why the confirm dialog can show you the whole file.
-3. **Bring it up** — the usual `wg-quick up`, optional; esc leaves the interface created but down.
+1. **Keygen.** One root shell: `sh -c 'umask 077 && wg genkey | tee /etc/wireguard/<if>.key | wg pubkey'`. The private key is written straight into a root-only file inside that shell and never leaves it; only the public key comes back, shown so you can hand it to peers.
+2. **Write the conf.** The file is fed to `install -m 600 /dev/stdin /etc/wireguard/<if>.conf` on stdin, so its content never rides an argv. The conf deliberately contains no private key: it carries `PostUp = wg set %i private-key /etc/wireguard/<if>.key`, so wg-quick loads the key from its file at up time. That is why the confirm dialog can show you the whole file.
+3. **Open the listen port**, only when the host firewall does not already accept it (see below).
+4. **Bring it up**, the usual `wg-quick up`, optional; esc leaves the interface created but down.
 
 ### A forwarding server (`N`, role step)
 
-After the port, `N` asks for the interface's **role**. An *endpoint* is reached by its peers and nothing else. A *forwarding server* is how peers reach the networks behind this host (a cloud VPC, an office LAN), and it needs three things a bare interface does not have, all found missing on a real Ubuntu 24.04 cloud VM after `N` had created its interface:
+After the port, `N` asks for the interface's role. An *endpoint* is reached by its peers and nothing else. A *forwarding server* is how peers reach the networks behind this host (a cloud VPC, an office LAN), and it needs three things a bare interface does not have, all found missing on a real Ubuntu 24.04 cloud VM after `N` had created its interface:
 
-- **Which networks it forwards for** — proposed from `ip -j route`: every network this host reaches directly, without the default route, host routes, link-local, links that are down and the WireGuard interfaces themselves. IPv4, in CIDR form; empty means any destination (a full tunnel).
-- **Which NIC the traffic leaves by** — proposed as the default route's device.
+- **Which networks it forwards for**, proposed from `ip -j route`: every network this host reaches directly, without the default route, host routes, link-local, links that are down and the WireGuard interfaces themselves. IPv4, in CIDR form; empty means any destination (a full tunnel).
+- **Which NIC the traffic leaves by**, proposed as the default route's device.
 - **The rules**, written into the interface's own conf as `PostUp`/`PostDown`, so they come and go with the interface, and shown whole in the confirm dialog before the file is written:
 
 ```ini
@@ -84,166 +77,37 @@ PostDown = iptables -D FORWARD -i eth0 -o %i -m conntrack --ctstate RELATED,ESTA
 PostDown = iptables -t nat -D POSTROUTING -s 10.8.0.0/24 -o eth0 -d 10.0.0.0/16 -j MASQUERADE
 ```
 
-The FORWARD rules are **inserted** (`-I`): the provider's Ubuntu image ends its FORWARD chain in `-j REJECT`, and a rule appended after it would never match. The return path is accepted by connection tracking only, so nothing behind the host can open a connection towards the peers. `ip_forward` is left on at down, because something else on the host may rely on it.
+The FORWARD rules are inserted (`-I`): the provider's Ubuntu image ends its FORWARD chain in `-j REJECT`, and a rule appended after it would never match. The return path is accepted by connection tracking only, so nothing behind the host can open a connection towards the peers. `ip_forward` is left on at down, because something else on the host may rely on it.
 
-**The listen port.** The same image ends its INPUT chain in `-j REJECT`, so the WireGuard port was closed even with the cloud's own security list open. When the host firewall does not already accept the port (or cannot be read), the wizard offers one more previewed step, `iptables -I INPUT -p udp --dport <port> -j ACCEPT`, and says plainly that it is **not persisted**: it is gone at the next reboot or firewall reload. When [tui-firewall](https://github.com/tui-tools/tui-firewall) is installed, the dialog says to open the port there to keep it; tui-firewall has no non-interactive mode, so tui-vpn does not drive it. Otherwise it points at `netfilter-persistent save`.
+**The listen port.** The same image ends its INPUT chain in `-j REJECT`, so the WireGuard port was closed even with the cloud's own security list open. When the host firewall does not already accept the port (or cannot be read), the wizard offers one more previewed step, `iptables -I INPUT -p udp --dport <port> -j ACCEPT`, and says plainly that it is not persisted: it is gone at the next reboot or firewall reload. When [tui-firewall](https://tui.tools/tools/tui-firewall/) is installed, the dialog says to open the port there to keep it; tui-firewall has no non-interactive mode, so tui-wireguard does not drive it. Otherwise it points at `netfilter-persistent save`.
 
 The interfaces screen shows both answers for every interface, read from the live ruleset (`iptables -S`, which needs root): **UDP IN** is `open`, `closed` or `?` for the listen port, following jumps into ufw's and docker's chains and ignoring rules that only some senders match; **FORWARD** is whether the FORWARD chain accepts traffic in on the interface.
 
 ### Persist peer changes (`w`)
 
-`wg set` mutations are runtime-only. After a successful peer add or remove, tui-vpn offers `wg-quick save <if>`; `w` on the interfaces or peers screen offers it on demand. The dialog warns before you confirm: the save **rewrites** the conf from runtime state (hand-written comments are lost, and wg-quick inlines the private key into the root-only, mode 600 file — standard wg-quick behaviour).
+`wg set` mutations are runtime-only. After a successful peer add or remove, tui-wireguard offers `wg-quick save <if>`; `w` on the interfaces or peers screen offers it on demand. The dialog warns before you confirm: the save rewrites the conf from runtime state (hand-written comments are lost, and wg-quick inlines the private key into the root-only, mode 600 file, which is standard wg-quick behaviour).
 
 ### Optional pre-shared key on add-peer
 
-End the add-peer line with `psk` and tui-vpn first previews a root shell that generates `wg genpsk` into a root-only file, then previews the add-peer command passing `wg` that file **path**. The key value never appears on a command line or on screen.
-
-### Pre-auth keys (`n` on the keys screen)
-
-Pick the owning user by id and optionally add the words `reusable`, `ephemeral` and an expiration like `30m`, `24h` or `7d` (default `24h`). The previewed command is `headscale preauthkeys create --user <id> [--reusable] [--ephemeral] --expiration <dur>`. Headscale prints the key once; tui-vpn shows it once in the status line with a "shown once — copy it now" note and never stores it. The list keeps showing prefixes only, like headscale's own CLI.
-
-### Server settings (`S` on the users screen)
-
-`S` is how clients reach the control plane. It starts with the **transport**, because the transport decides what every later answer means, and writes only the lines that transport needs into `/etc/headscale/config.yaml`:
-
-| Transport | `server_url` | `listen_addr` | What else is written | What is cleared |
-| --- | --- | --- | --- | --- |
-| **plain http** | `http://`, an IP or a name | proposed as `0.0.0.0:<the URL's port>` | nothing | `tls_letsencrypt_hostname`, `tls_cert_path`, `tls_key_path` |
-| **Let's Encrypt** | `https://` and a public DNS name; an IP is refused | `0.0.0.0:443` | `tls_letsencrypt_hostname` (the URL's host), `tls_letsencrypt_challenge_type` (`TLS-ALPN-01` when port 80 is closed, `HTTP-01` otherwise), `acme_email` (optional) | `tls_cert_path`, `tls_key_path` |
-| **own certificate** | `https://` and the name on the certificate | `0.0.0.0:443` | `tls_cert_path`, `tls_key_path` | `tls_letsencrypt_hostname` |
-| **reverse proxy** | `https://` and the name the proxy serves | loopback, refused otherwise | nothing: TLS ends at the proxy | `tls_letsencrypt_hostname`, `tls_cert_path`, `tls_key_path` |
-
-"Cleared" means emptied where the file already has the key, and left alone where it does not: switching from Let's Encrypt to plain http empties `tls_letsencrypt_hostname`, so headscale stops asking for a certificate nobody wants, and a file that never had the key gains no empty line.
-
-Every transport ends with **`dns.base_domain`**, the MagicDNS domain nodes are named under. It is checked the way headscale checks it at startup: a valid DNS name, required while `dns.magic_dns` is on, and not a suffix of the `server_url` host (MagicDNS owns every name under it, so clients could not reach the control plane, and headscale refuses to start).
-
-A refused answer reopens its own step with the reason on top and what you typed still in it.
-
-**The host is checked, not only the characters.** headscale does not validate the host of `server_url`, so a public IP typed with one digit too many (`http://203.0.113.1000:443`) used to be written and served, and every client then failed on a DNS lookup for a name that looks like an address. A host has to be an IP address that parses, or a DNS name whose last label is not all digits (no top-level domain is numeric). The same check applies to `listen_addr`'s address part and to the OIDC issuer, and a malformed value already in the file is flagged in the panel and shown with its problem when `S` proposes it.
-
-**Plain http is a real option, not a mistake.** The Tailscale control protocol runs over Noise, so everything between clients and headscale is encrypted and authenticated whatever the URL scheme. The one thing that needs https is a browser: an OIDC login redirects to `<server_url>/oidc/callback`, and Google and most other IdPs refuse a redirect URI that is plain http or names a raw IP. So the panel explains plain http instead of warning about it, and only when OIDC is configured do the form and the confirm dialog say, before and after the answer, that browser logins will fail. The panel also shows that redirect URI, next to whether an IdP will accept it, because it is the value an OAuth client has to be registered with.
-
-The painless case, a server reached by IP: pick **plain http**, type `http://203.0.113.10:443`, accept the proposed `0.0.0.0:443`, and give a private base domain such as `tailnet.internal`. The diff is three lines.
-
-**An own certificate is checked before it is written.** The form `stat`s the certificate, the key and every directory above them from this machine, and refuses a pair the account headscale runs as cannot reach, naming the file or directory in the way. The pair [tui-cert](https://github.com/tui-tools/tui-cert) issues lives in its root-only `/etc/ssl/tui-cert`, which a `headscale` user cannot enter: its install step copies the pair wherever the service can read it. A path under `/home` or `/tmp` gets a warning, because the packaged unit hides those trees from the service. [tui-firewall](https://github.com/tui-tools/tui-firewall) opens the port, or port 80 for `HTTP-01`.
-
-The confirm dialog shows a **diff of the changed lines and nothing else** (a value already in the file, however it is quoted, is not a change), then the write, then the step that makes headscale read it as a separate, optional confirm (see [The last step: restart, or enable](#the-last-step-restart-or-enable)).
-
-### The last step: restart, or enable
-
-`S` and `O` both end by making headscale read the new configuration, and what that takes depends on the unit, which the panel shows next to its active state (`headscale active · enabled`):
-
-| The unit is | The last step previews |
-| --- | --- |
-| enabled (or static, indirect: anything that already starts at boot) | `systemctl restart headscale` |
-| disabled and not running, which is how a fresh package install leaves it | `systemctl enable --now headscale` |
-| disabled but running, started by hand | `systemctl enable headscale`, then `systemctl restart headscale` as its own confirm |
-
-A disabled unit is the trap: a restart brings the control plane up now, and it is gone after the next reboot. `enable --now` would not help the third row either, because it leaves a running unit alone and the new configuration would never be read. Esc at any of these steps leaves the file written and the unit as it was.
-
-### Identity provider (OIDC)
-
-`O` on the users screen configures the whole `oidc:` section: issuer URL, client id, client secret, allowed domains, allowed groups, allowed users, scope (`openid profile email` by default), `only_start_if_oidc_is_available` and `pkce.enabled`.
-
-**It starts with the provider.** The first step is a picker:
-
-| Provider | What the preset does |
-| --- | --- |
-| **Google** | Fills the issuer (`https://accounts.google.com`) and the default scope, and **skips the groups step, emptying `allowed_groups`**: Google's ID token carries no groups claim, so any group there would make headscale refuse every login, the listed users included. `allowed_domains` (your Workspace domain) or `allowed_users` is the gate. It refuses to start when `server_url` is plain http or an IP address, because Google refuses such a redirect URI. |
-| **generic OIDC** | Asks for the issuer (Keycloak, Authentik and the rest fit here). An issuer typed here that belongs to a preset, such as Google's, gets that preset's rules. |
-
-**The redirect URI is in the dialog.** The client id step says `Register <server_url>/oidc/callback as the OAuth client's redirect URI`, which is the one value the OAuth client has to be created with, and warns when an IdP would refuse it.
-
-**The allow lists are combined with AND.** headscale lets a login in only when it matches every list that is not empty: with `allowed_domains: [example.com]`, an address from another domain is refused even when `allowed_users` names it (`unauthorised domain` on `/oidc/callback`). The dialog says so on each list, warns when an `allowed_users` entry has a domain `allowed_domains` would refuse, and warns when all three are empty (anyone the IdP authenticates gets in). The panel flags both mistakes in a configuration it did not write: a user outside the domains, and `allowed_groups` set for an IdP that sends no groups claim.
-
-**What is written where.** Two files, and only two:
-
-| File | What lands in it | Mode |
-| --- | --- | --- |
-| `/etc/headscale/config.yaml` | every OIDC setting **except** the secret, plus `client_secret_path` pointing at the file below | unchanged (the write truncates in place and keeps the existing owner and mode; a `.bak` copy is taken first) |
-| `/etc/headscale/oidc_client_secret` | the client secret, and nothing else | `600`, owned by the account the `headscale` unit runs as, created atomically by `install -o … -g … -m 600` |
-
-**The secret is never shown.** It is typed with the echo masked, travels to the exec site on the command's **standard input** — never on an argv, which is visible in `ps` to every user on the machine — and is dropped from the tool's memory the moment the write command exists, cancelled flows included. It is not in the confirm dialog, not in the status line, not in the diff, and not in `config.yaml`: headscale reads it from the file through `client_secret_path`. The tool will not read it back either; the most it will ever say is `secret set`. When a secret is already configured, leaving the field empty keeps it, and typing a new one replaces it.
-
-A secret found sitting *inline* in `config.yaml` — someone else's setup, or an older one — is flagged in the panel and emptied by the next `O`, because headscale refuses to start with both a secret and a secret path, and because a credential has no business being in a configuration file. The diff redacts that line rather than printing it.
-
-**The diff is minimal, by construction.** `config.yaml` is not re-serialised: it is parsed only to *locate* each key, then spliced line by line, so comments, blank lines, key order and every section the change does not touch survive byte for byte. The lines the dialog shows are provably the only lines that differ.
-
-**The issuer is checked before saving.** tui-vpn fetches `<issuer>/.well-known/openid-configuration` with `curl` **from the server itself** — the machine that will have to reach the IdP — and reports what it found. A failure is a warning, not a refusal: an IdP that is down this minute is not a reason to be unable to write down its address.
-
-**Then a restart.** A configuration change does nothing until the unit that reads it restarts, so the flow ends with `systemctl restart headscale` as its own confirm, or with the enable a disabled unit needs (see [the last step](#the-last-step-restart-or-enable)). Esc there leaves the file written and the running server on the old settings.
-
-**The secret file is owned by the service, not by root.** tui-vpn reads `systemctl show headscale -p User -p Group` and hands the file to that account in the same previewed `install`, so there is no second step and no window in which the ownership is wrong. It matters because units disagree: headscale's own `.deb` (0.29.3, checked on a real Ubuntu 24.04 host) and the Arch package run it as a dedicated `headscale` user, while a hand-written or older unit may run it as root — and a root-only secret file would leave a `headscale`-user service unable to read its own credential and unable to come back from the restart at the end of the flow. A unit that names no user gets `root:root`, which is what systemd would have used anyway. The mode stays `600` in every case: the owner is what changes, so the file is readable by exactly one account either way. The panel shows which account that is, next to the unit's state.
-
-### State ownership (`F` on the users screen)
-
-A common way to break a fresh control plane without noticing: run `sudo headscale configtest` (or any `headscale` subcommand) as root before the first start. That creates the noise private key and the SQLite database owned by `root`, while the packaged unit runs as `User=headscale`, and the service then fails at the restart that ends `S` or `O` with nothing pointing at the cause. systemd's `StateDirectory=` does not help: it fixes the owner of `/var/lib/headscale` itself, not of the files already inside it.
-
-So the panel checks. It reads the unit's `User`/`Group` (the same read the secret file uses) and `stat`s:
-
-| Path | Should belong to |
-| --- | --- |
-| `/var/lib/headscale`, and the directories under it that hold the files below | the account the unit runs as |
-| `noise.private_key_path` (and a pre-0.23 top-level `private_key_path`) | the account the unit runs as |
-| `database.sqlite.path`, with its `-wal` and `-shm` files (not checked for postgres) | the account the unit runs as |
-| `/etc/headscale/oidc_client_secret`, which `O` writes | the account the unit runs as |
-| `/etc/headscale/config.yaml.bak`, which every write takes | whoever owns `config.yaml`: it holds the same content, so no more and no less readable |
-
-A path that does not exist yet is not a problem, and a unit that runs as root is never short of access, so only the backup is compared there. A mismatch shows next to the service state (`ownership ⚠ /var/lib/headscale/noise_private.key is root:root, want headscale:headscale — F fixes it`), and `F` previews the fix, one confirm per command:
-
-- every mismatch inside `/var/lib/headscale` is covered by **one** `chown -R <user>:<group> /var/lib/headscale`, because a root-run headscale leaves more behind than the files the check names, and the whole directory belongs to the service anyway;
-- a state file `config.yaml` puts anywhere else gets its own `chown <user>:<group> <file>`, never a recursive one: a database at `/srv/db.sqlite` must not turn into a `chown -R` of `/srv`;
-- the secret file and the backup get a plain `chown` each.
-
-The chain ends with the same restart (or enable) step as `S` and `O`, since a service that failed on these files needs one. `--check` reports the result as `ownershipChecked`, `ownershipOk` and `ownershipIssues` (path, role, current and wanted owner); an ownership that could not be read is reported as unchecked, never as fine.
-
-### Routes: subnet routers and exit nodes (`r` on the nodes screen)
-
-A node that runs `tailscale up --advertise-routes=10.0.0.0/16` (a subnet router) or `--advertise-exit-node` offers routes to the tailnet, and they stay pending until an admin approves them. The **ROUTES** column shows each advertised route with its state (`10.0.0.0/16 ✓`, `10.1.0.0/24 pending`), and the two exit routes (`0.0.0.0/0` and `::/0`) as one `exit node`.
-
-`r` opens the selected node's routes, prefilled with everything it advertises, so approving what it offers is one keystroke. The list **replaces** the node's approvals, because that is what the command does: take an entry out to revoke it, leave the line empty to revoke them all; `exit` stands for both exit routes. The confirm says what is approved and what is revoked, and previews:
-
-```sh
-headscale nodes approve-routes --identifier <id> --routes 10.0.0.0/16,0.0.0.0/0,::/0
-```
-
-A revocation is a danger dialog, and revoking everything is written `--routes=` so the empty value is visible. (`headscale routes` no longer exists since 0.26; the field names were checked against headscale 0.29.3's own output: `available_routes`, `approved_routes`, `subnet_routes`.) `--check` reports each node's routes as counts, `nodeRoutes` with `advertised`, `approved`, `pending` and `exitNode`, never the networks themselves.
-
-### Node rename and delete (`m` / `x`)
-
-`m` renames the selected node (DNS-label names) via `headscale nodes rename --identifier <id> <name>`; `x` deletes it via `headscale nodes delete --identifier <id> --force` — `--force` because tui-vpn's own confirm dialog is the prompt, and it is painted as a danger dialog.
-
-All of the above works under `--demo` too, against the fake backend, with nothing installed and nothing changed.
+End the add-peer line with `psk` and tui-wireguard first previews a root shell that generates `wg genpsk` into a root-only file, then previews the add-peer command passing `wg` that file's path. The key value never appears on a command line or on screen.
 
 ## `--report`, for bug reports
 
 ```sh
-tui-vpn --report
+tui-wireguard --report
 ```
 
-Prints the versions and machine facts a bug report needs and exits — no UI, no privileges, and nothing about you: no private key, no public key of this host, no endpoint address. It names the versions of the two backends it drives (`wg` and `headscale`), whether this host runs a WireGuard interface, and whether a control plane is present. It runs even on a machine with neither installed, so "there is nothing here to drive" is itself a filable report.
+Prints the versions and machine facts a bug report needs and exits: no UI, no privileges, and nothing about you (no private key, no public key of this host, no endpoint address). It names the wireguard-tools version and how many WireGuard interfaces this host runs, and says when a configuration file of the old tui-vpn name was read. It runs even on a machine with nothing installed, so "there is nothing here to drive" is itself a report worth filing.
 
 ## `--check`, one read as JSON
 
 ```sh
-tui-vpn --check
+tui-wireguard --check
 ```
 
-Reads the interfaces and the control plane once and prints a summary as JSON: interface and peer counts, per-peer handshake ages, per-interface `listenPortInput` (what the host's INPUT chain does with a handshake: `accept`, `reject`, `drop`, or `unknown` when the ruleset could not be read, with `firewallChecked` saying which) and `forwarding`, whether Headscale is present, user and node counts, and a `compat` block naming each backend's version.
+Reads the interfaces and the host firewall once and prints a summary as JSON: interface and peer counts, per-peer handshake ages, per-interface `listenPortInput` (what the host's INPUT chain does with a handshake: `accept`, `reject`, `drop`, or `unknown` when the ruleset could not be read, with `firewallChecked` saying which) and `forwarding`, and a `compat` block naming the wireguard-tools version.
 
-It also carries a `controlPlane` block read from `/etc/headscale/config.yaml`: `serviceState` and `serviceEnabled` (what `systemctl is-active` and `is-enabled` answer for the unit), `serviceAccount`, the ownership check (`ownershipChecked`, `ownershipOk`, `ownershipIssues`), `oidcClientId`, the scope, whether a client secret is set, and the answers below. With the unit stopped, `headscale.error` is the same sentence the screens show and `headscale.notRunning` is true. `oidcConfigured` now comes from that configuration rather than being guessed; the older guess — inferred from users carrying a provider and nodes registered through OIDC — stays as `oidcInferred`, which is the answer used on a host whose `config.yaml` cannot be read.
-
-Like `--report`, it carries **no key, no endpoint, no URL and no address of the host** — and the control-plane block is no exception. What an "OIDC does not work" report actually needs is the two ways the setup fails, not the URL that names your server, so:
-
-| Instead of | `--check` prints |
-| --- | --- |
-| `server_url` | `serverUrlSet`, `serverUrlHttps`, `serverUrlLoopback` and `serverUrlIsIp` — the questions worth asking, as booleans — and `transport` (`plain-http`, `letsencrypt`, `own-cert` or `reverse-proxy`) |
-| `listen_addr` | `listenPort` and `listenLoopback`, because a bind address can name an internal interface |
-| the OIDC issuer URL | `oidcIssuer`, reduced to the issuer's **host name** — which IdP, without the realm and path that describe your internal layout |
-
-When OIDC is configured, `oidcReadiness` answers whether a browser login can work: `redirectHttps` (https on a DNS name, not loopback), `allowListsNonEmpty`, `groupsWithNoGroupsIdp` (the Google case above) and `usersOutsideDomains` (a count, not the addresses). `issuerReachable` is in it only with `--check --probe-issuer`, which fetches the issuer's discovery document from this machine the way `O` does; a plain `--check` never goes on the network.
-
-`baseDomain` is printed as it is, like the issuer's host: it is the tailnet's own naming, and `baseDomainConflict` answers whether headscale would refuse to start over it. The allow lists are counted rather than printed, because they name people, and the client secret has no field at all — only `oidcClientSecretSet`. `test/smoke.sh` asserts that no `://` survives anywhere in the output.
+Like `--report`, it carries no key, no endpoint, no URL and no address of the host: it is meant to be pasted into scripts and issues. `test/smoke.sh` asserts that no `://` survives anywhere in the output, and that the interfaces, ports and peer counts agree with `wg show`.
 
 <!-- install:start -->
 <!-- Generated by tui-kit/tools/render-install.py from tool.json. -->
@@ -252,8 +116,8 @@ When OIDC is configured, `oidcReadiness` answers whether a browser login can wor
 ### From source
 
 ```sh
-git clone https://github.com/tui-tools/tui-vpn
-cd tui-vpn && make demo
+git clone https://github.com/tui-tools/tui-wireguard
+cd tui-wireguard && make demo
 ```
 
 Not packaged for these yet; the static binary works everywhere in the meantime.
@@ -287,7 +151,7 @@ sudo pacman -Sy
 Then, and for every other tool in the family:
 
 ```sh
-sudo pacman -S tui-vpn
+sudo pacman -S tui-wireguard
 ```
 
 Available once the first release lands in pkgs.tui.tools.
@@ -320,7 +184,7 @@ sudo apt update
 Then, and for every other tool in the family:
 
 ```sh
-sudo apt install tui-vpn
+sudo apt install tui-wireguard
 ```
 
 Available once the first release lands in pkgs.tui.tools.
@@ -350,7 +214,7 @@ sudo dnf makecache
 Then, and for every other tool in the family:
 
 ```sh
-sudo dnf install tui-vpn
+sudo dnf install tui-wireguard
 ```
 
 Available once the first release lands in pkgs.tui.tools.
@@ -358,29 +222,29 @@ Available once the first release lands in pkgs.tui.tools.
 ### Any distribution, static binary — coming soon
 
 ```sh
-curl -fsSL https://github.com/tui-tools/tui-vpn/releases/download/v0.4.0/tui-vpn_0.4.0_linux_amd64.tar.gz | tar -xz tui-vpn
-sudo install -m0755 tui-vpn /usr/local/bin/tui-vpn
+curl -fsSL https://github.com/tui-tools/tui-wireguard/releases/download/v0.4.0/tui-wireguard_0.4.0_linux_amd64.tar.gz | tar -xz tui-wireguard
+sudo install -m0755 tui-wireguard /usr/local/bin/tui-wireguard
 ```
 
 Available once the first release is tagged.
 
 ### Verify a download
 
-Every release of `tui-vpn` ships a `checksums.txt`. Check an archive against it
-before installing:
+Every release of `tui-wireguard` ships a `checksums.txt`. Check an archive
+against it before installing:
 
 ```sh
 sha256sum -c checksums.txt --ignore-missing
 ```
 
-Website: https://tui.tools/tools/tui-vpn/
+Website: https://tui.tools/tools/tui-wireguard/
 <!-- install:end -->
 
 <!-- compat:start -->
 <!-- Generated by tui-kit/tools/render-compat.py from tool.json. -->
 <!-- Edit the manifest, then run `make readme`. -->
 
-`tui-vpn` probes its backend once at startup and shows the version in the
+`tui-wireguard` probes its backend once at startup and shows the version in the
 header. A version nobody has tested is marked `(untested)` there rather than
 hidden; one below the minimum is marked as such and the tool still runs.
 
@@ -391,29 +255,12 @@ hidden; one below the minimum is marked as such and the tool still runs.
 | Binary | `wg` |
 | Version read with | `wg --version` |
 | Minimum | 1.0.20200513 |
-| Tested | `1.0.20210914` |
-
-### headscale
-
-| | |
-| --- | --- |
-| Binary | `headscale` |
-| Version read with | `headscale version` |
-| Minimum | 0.22.0 |
-| Tested | `0.29.3` |
-
-| Versions | What changes |
-| --- | --- |
-| `<0.23` | `preauthkeys list` requires a `--user`, so the pre-auth keys screen may be empty; users and nodes are unaffected |
+| Tested | `1.0.20210914`, `1.0.20250521`, `1.0.20260223` |
 
 The tested versions are generated from `compat/results.jsonl`, which the tool's
 own smoke test appends to when it runs against a real machine in
 [tui-lab](https://github.com/tui-tools/tui-lab).
 <!-- compat:end -->
-
-## Phase 2: OpenVPN
-
-OpenVPN is a planned second backend, with [openvpn-auth-oauth2](https://github.com/jkroepke/openvpn-auth-oauth2) for its OAuth2 story. It is not part of this phase.
 
 ## License
 

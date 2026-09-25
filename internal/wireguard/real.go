@@ -13,72 +13,41 @@ import (
 // PATH. wg and wg-quick live in /usr/bin on most distributions; ip is in
 // /usr/sbin on systems that still split sbin.
 var searchPaths = map[string][]string{
-	"wg":        {"/usr/bin/wg", "/bin/wg"},
-	"wg-quick":  {"/usr/bin/wg-quick", "/bin/wg-quick"},
-	"headscale": {"/usr/bin/headscale", "/usr/local/bin/headscale"},
-	"ip":        {"/usr/sbin/ip", "/sbin/ip", "/usr/bin/ip"},
+	"wg":       {"/usr/bin/wg", "/bin/wg"},
+	"wg-quick": {"/usr/bin/wg-quick", "/bin/wg-quick"},
+	"ip":       {"/usr/sbin/ip", "/sbin/ip", "/usr/bin/ip"},
 	// sh and install exist for the interface-bootstrap flow: the key pair is
 	// generated inside one root shell so the private key never leaves the exec
 	// site, and the conf file arrives on install's stdin so content never
-	// rides an argv. They serve the control-plane configuration flow the same
-	// way: config.yaml on stdin, the OIDC client secret on install's.
-	"sh":      {"/bin/sh", "/usr/bin/sh"},
+	// rides an argv.
+	"sh": {"/bin/sh", "/usr/bin/sh"},
+	// ls lists the configuration files in /etc/wireguard, which is how an
+	// interface that is down is still on screen to be brought up.
+	"ls":      {"/usr/bin/ls", "/bin/ls"},
 	"install": {"/usr/bin/install", "/bin/install"},
-	// cat is the escalated read of /etc/headscale/config.yaml, which is
-	// root-only on every distribution that packages headscale.
-	"cat": {"/usr/bin/cat", "/bin/cat"},
-	// systemctl reads the headscale unit's state and restarts it after a
-	// configuration change.
-	"systemctl": {"/usr/bin/systemctl", "/bin/systemctl"},
-	// curl makes the one request this tool ever sends off the machine: the
-	// IdP's discovery document, fetched from the router itself because the
-	// router is what will have to reach the IdP.
-	"curl": {"/usr/bin/curl", "/bin/curl"},
-	// stat reads who owns headscale's state files and the files this tool
-	// writes for it; chown is the previewed fix when the answer is wrong.
-	"stat":  {"/usr/bin/stat", "/bin/stat"},
-	"chown": {"/usr/bin/chown", "/bin/chown"},
 	// iptables reads the host firewall (is a listen port open, does the host
 	// forward for an interface) and opens a listen port when asked.
 	"iptables": iptablesSearchPaths,
 }
 
 // privilegedRead marks the binaries whose reads need root. Reading a WireGuard
-// interface needs CAP_NET_ADMIN, and the Headscale CLI talks to a socket only
-// root can open; `ip link` is an ordinary read.
+// interface needs CAP_NET_ADMIN; `ip link` and `ip route` are ordinary reads.
 var privilegedRead = map[string]bool{
-	"wg":        true,
-	"headscale": true,
-	"ip":        false,
-	// config.yaml is root-only, so its read escalates like wg's does.
-	"cat": true,
-	// systemctl's reads are unprivileged; only its verbs are not.
-	"systemctl": false,
-	// curl reads the public internet, which needs no privilege at all.
-	"curl": false,
-	// The state directory is mode 750 and owned by the service account, so
-	// only root can see inside it.
-	"stat": true,
+	"wg": true,
+	"ip": false,
+	// /etc/wireguard is mode 700, root's.
+	"ls": true,
 	// Reading the ruleset needs root: unprivileged, iptables refuses with
 	// "you must be root".
 	"iptables": true,
 }
 
-// neverEscalate marks the binaries that must run as the invoking user even
-// when they are not a Read. There is one: `curl`, whose only use here is
-// fetching an IdP's public discovery document. Nothing about that needs root,
-// and a preview reading `sudo -n curl …` would be asking for a privilege the
-// command has no business having.
-var neverEscalate = map[string]bool{"curl": true}
-
 // installHints tell a user what to install when a binary is missing.
 var installHints = map[string]string{
-	"wg":        "install wireguard-tools",
-	"wg-quick":  "install wireguard-tools",
-	"headscale": "install headscale, or run without a control plane",
-	"ip":        "install iproute2",
-	"curl":      "install curl to validate an OIDC issuer",
-	"iptables":  "install iptables to read and open the host firewall",
+	"wg":       "install wireguard-tools",
+	"wg-quick": "install wireguard-tools",
+	"ip":       "install iproute2",
+	"iptables": "install iptables to read and open the host firewall",
 }
 
 // Real is the backend that drives the machine. It is the tool's only exec site:
@@ -95,9 +64,9 @@ type Real struct {
 }
 
 // New builds the real backend. It deliberately cannot fail: no single binary's
-// absence means "nothing to show", because a host may have WireGuard without a
-// control plane, or the reverse. A missing binary becomes an empty section,
-// found out at read time.
+// absence means "nothing to show", because a host may have WireGuard without
+// iptables, or the reverse. A missing binary becomes an empty section, found
+// out at read time.
 func New(sudoPrefix []string) (*Real, error) {
 	return &Real{
 		sudo:    sudoPrefix,
@@ -111,17 +80,10 @@ func (r *Real) Name() string { return "wireguard" }
 
 // Describe is the one-line summary shown in the header.
 func (r *Real) Describe() string {
-	parts := []string{}
 	if r.available("wg") {
-		parts = append(parts, "wireguard")
+		return "wireguard"
 	}
-	if r.available("headscale") {
-		parts = append(parts, "headscale")
-	}
-	if len(parts) == 0 {
-		return "no backend found — install wireguard-tools, or use --demo"
-	}
-	return strings.Join(parts, " + ")
+	return "no backend found — install wireguard-tools, or use --demo"
 }
 
 // runnerFor resolves a binary's runner on first use and caches it. A binary
@@ -136,14 +98,10 @@ func (r *Real) runnerFor(bin string) (*runner.Runner, error) {
 		return nil, err
 	}
 	priv := privilegedRead[bin]
-	sudo := r.sudo
-	if neverEscalate[bin] {
-		sudo = nil
-	}
 	run, err := runner.New(runner.Options{
 		Bin:             bin,
 		SearchPaths:     searchPaths[bin],
-		SudoPrefix:      sudo,
+		SudoPrefix:      r.sudo,
 		PrivilegedReads: &priv,
 		InstallHint:     installHints[bin],
 	})
@@ -187,9 +145,9 @@ func (r *Real) Run(ctx context.Context, cmd runner.Command) (string, error) {
 	return run.Run(ctx, cmd)
 }
 
-// Load reads the whole model: WireGuard first, then the control plane. Neither
-// missing binary nor a failed read fails the load — each becomes a fact the UI
-// can show.
+// Load reads the whole model: WireGuard first, then the host network around
+// it. Neither a missing binary nor a failed read fails the load — each becomes
+// a fact the UI can show.
 func (r *Real) Load(ctx context.Context) (State, error) {
 	var state State
 
@@ -202,11 +160,27 @@ func (r *Real) Load(ctx context.Context) (State, error) {
 			state.Devices = ParseWgDump(dump)
 		}
 		r.annotateLinks(ctx, &state)
+		r.addConfigured(ctx, &state)
 	}
 	r.loadHostNet(ctx, &state)
-
-	r.loadHeadscale(ctx, &state)
 	return state, nil
+}
+
+// addConfigured lists the interfaces that have a configuration file in
+// /etc/wireguard but are not up, so they can be brought up again. The
+// directory is root-only on every distribution that ships wireguard-tools, so
+// the listing escalates like wg's own read. A failure is silent: the live
+// interfaces are already on screen, and this only adds the down ones.
+func (r *Real) addConfigured(ctx context.Context, state *State) {
+	run, err := r.runnerFor("ls")
+	if err != nil {
+		return
+	}
+	out, err := run.Read(ctx, "ls", "-1", ConfDir)
+	if err != nil {
+		return
+	}
+	state.Devices = MergeConfigured(state.Devices, ParseConfNames(out))
 }
 
 // loadHostNet reads the routing table and the host firewall. Both are best
@@ -249,176 +223,16 @@ func (r *Real) annotateLinks(ctx context.Context, state *State) {
 	}
 }
 
-// loadHeadscale reads the control plane, when its binary is present.
-func (r *Real) loadHeadscale(ctx context.Context, state *State) {
-	run, err := r.runnerFor("headscale")
-	if err != nil {
-		return
-	}
-	hs := Headscale{Present: true}
-	// The configuration is read first: it is the one part of the control plane
-	// that still has an answer when headscale's own socket does not.
-	hs.ControlPlane = r.loadControlPlane(ctx)
-
-	// With the unit known to be stopped, every CLI read would fail on the
-	// socket; the screens say so instead of showing that failure.
-	if msg := NotRunningMessage(hs.ControlPlane); msg != "" {
-		hs.Error, hs.NotRunning = msg, true
-		state.Headscale = hs
-		return
-	}
-
-	usersOut, err := run.Read(ctx, "headscale", "users", "list", "--output", "json")
-	if err != nil {
-		hs.Error = CLIErrorMessage(usersOut, err)
-		state.Headscale = hs
-		return
-	}
-	if users, err := ParseUsers([]byte(usersOut)); err == nil {
-		hs.Users = users
-	}
-
-	if nodesOut, err := run.Read(ctx, "headscale", "nodes", "list", "--output", "json"); err == nil {
-		if nodes, err := ParseNodes([]byte(nodesOut)); err == nil {
-			hs.Nodes = nodes
-		}
-	}
-
-	if keysOut, err := run.Read(ctx, "headscale", "preauthkeys", "list", "--output", "json"); err == nil {
-		if keys, err := ParsePreAuthKeys([]byte(keysOut)); err == nil {
-			hs.PreAuthKeys = keys
-		}
-	}
-
-	hs.OIDCInferred = InferOIDC(hs.Users, hs.Nodes)
-	state.Headscale = hs
-}
-
-// loadControlPlane reads headscale's own configuration and the state of its
-// unit. Neither is fatal: a host where config.yaml cannot be read still shows
-// its users and nodes, and says why the control-plane panel is empty.
-func (r *Real) loadControlPlane(ctx context.Context) ControlPlane {
-	cp := r.readControlPlane(ctx)
-	// The unit's state is read whether or not the file could be: "not
-	// running" is the answer the list screens need even when config.yaml is
-	// unreadable.
-	cp.ServiceState = r.serviceState(ctx)
-	cp.ServiceEnabled = r.serviceEnabled(ctx)
-	if cp.Readable {
-		cp.Ownership = r.checkOwnership(ctx, cp)
-	}
-	return cp
-}
-
-// readControlPlane reads and parses config.yaml, with the account the unit
-// runs as, which the ownership check compares against.
-func (r *Real) readControlPlane(ctx context.Context) ControlPlane {
-	cp := ControlPlane{ConfigPath: HeadscaleConfigPath}
-
-	run, err := r.runnerFor("cat")
-	if err != nil {
-		cp.Error = runner.FirstLine(err.Error())
-		return cp
-	}
-	out, err := run.Read(ctx, "cat", HeadscaleConfigPath)
-	if err != nil {
-		cp.Error = runner.FirstLine(err.Error())
-		return cp
-	}
-	parsed, err := ParseHeadscaleConfig([]byte(out))
-	if err != nil {
-		cp.Error = runner.FirstLine(err.Error())
-		return cp
-	}
-	cp = parsed
-	cp.ServiceUser, cp.ServiceGroup = r.serviceAccount(ctx)
-	return cp
-}
-
-// checkOwnership stats headscale's state paths and the tool's own files, and
-// compares their owners with the account the unit runs as. `stat` exits
-// non-zero when any path is missing — the database of a server that never
-// started, a backup never taken — and still prints every path it found, so
-// its output is parsed whatever the exit status. Only a read that printed
-// nothing at all leaves the ownership unchecked.
-func (r *Real) checkOwnership(ctx context.Context, cp ControlPlane) Ownership {
-	stats := r.Stat(ctx, OwnershipPaths(cp))
-	if len(stats) == 0 {
-		return Ownership{}
-	}
-	return CheckOwnership(cp, stats)
-}
-
-// Stat reads owner, group and mode of each path, escalated. `stat` exits
-// non-zero when any path is missing and still prints every one it found, so
-// the output is parsed whatever the exit status.
-func (r *Real) Stat(ctx context.Context, paths []string) map[string]FileStat {
-	run, err := r.runnerFor("stat")
-	if err != nil || len(paths) == 0 {
-		return map[string]FileStat{}
-	}
-	out, _ := run.Read(ctx, StatArgv(paths)...)
-	return ParseStat(out)
-}
-
-// serviceAccount asks systemd which account the headscale unit runs as. It is
-// what the client secret file must be owned by: headscale's own .deb and the
-// Arch package run it as a dedicated user, older or hand-written units run it
-// as root, and a file the service
-// cannot read is a service that will not come back from the restart.
-func (r *Real) serviceAccount(ctx context.Context) (user, group string) {
-	run, err := r.runnerFor("systemctl")
-	if err != nil {
-		return DefaultServiceUser, DefaultServiceUser
-	}
-	out, _ := run.Read(ctx, ServiceAccountProperties()...)
-	return ParseServiceAccount(out)
-}
-
-// serviceState asks systemd what the headscale unit is doing. `is-active`
-// exits non-zero for every answer but "active", which is a state, not a
-// failure: the word it printed is the answer either way.
-func (r *Real) serviceState(ctx context.Context) string {
-	run, err := r.runnerFor("systemctl")
-	if err != nil {
-		return "unknown"
-	}
-	out, _ := run.Read(ctx, "systemctl", "is-active", HeadscaleService)
-	if state := strings.TrimSpace(runner.FirstLine(out)); state != "" {
-		return state
-	}
-	return "unknown"
-}
-
-// serviceEnabled asks systemd whether the headscale unit starts at boot. Like
-// is-active, is-enabled exits non-zero for most of its answers ("disabled"
-// among them), and the word it printed is the answer either way.
-func (r *Real) serviceEnabled(ctx context.Context) string {
-	run, err := r.runnerFor("systemctl")
-	if err != nil {
-		return "unknown"
-	}
-	out, _ := run.Read(ctx, "systemctl", "is-enabled", HeadscaleService)
-	if state := strings.TrimSpace(runner.FirstLine(out)); state != "" && !strings.Contains(state, " ") {
-		return state
-	}
-	return "unknown"
-}
-
 // HostFact is a set of unprivileged facts about this host, for --report. None
-// of it reads a key, an endpoint or an address: it counts WireGuard interfaces
-// and reports whether the control-plane binary is present.
+// of it reads a key, an endpoint or an address: it counts WireGuard interfaces.
 type HostFact struct {
 	// WGInterfaces is the number of wireguard-type links, or -1 when the count
 	// could not be taken (no ip, or the read failed).
 	WGInterfaces int
-	// HeadscalePresent reports that the headscale binary was found.
-	HeadscalePresent bool
 }
 
 // HostFacts probes the host without privilege, for the bug-report block. It
-// runs `ip -o link show type wireguard`, an ordinary read, and checks whether
-// the headscale binary resolves.
+// runs `ip -o link show type wireguard`, an ordinary read.
 func HostFacts(ctx context.Context, sudoPrefix []string) HostFact {
 	fact := HostFact{WGInterfaces: -1}
 
@@ -431,7 +245,6 @@ func HostFacts(ctx context.Context, sudoPrefix []string) HostFact {
 			fact.WGInterfaces = countLines(out)
 		}
 	}
-	fact.HeadscalePresent = runner.Available("headscale", searchPaths["headscale"]...)
 	return fact
 }
 

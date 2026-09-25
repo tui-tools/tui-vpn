@@ -12,9 +12,9 @@ import (
 // package's testdata — see
 // https://github.com/tui-tools/tui-kit/blob/main/templates/FUZZING.md.
 //
-// This package has four parsers (the wg dump and the three Headscale lists) and
-// one command builder that takes a public key and a set of allowed-ips from
-// outside. Each has a target below. The invariant, not the output, is what is
+// This package has three parsers (the wg dump, `iptables -S` and `ip -j
+// route`) and one command builder that takes a public key and a set of
+// allowed-ips from outside. Each has a target below. The invariant, not the output, is what is
 // asserted: for any input at all, a parser never panics and never returns a
 // value that breaks the model, and the builder never produces a runnable
 // command that carries something it should not.
@@ -77,51 +77,40 @@ func FuzzParseWgDump(f *testing.F) {
 	})
 }
 
-func FuzzParseUsers(f *testing.F) {
-	seedFrom(f, "headscale-users")
-	f.Fuzz(func(t *testing.T, data string) {
-		users, err := ParseUsers([]byte(data))
-		if err != nil {
-			if users != nil {
-				t.Fatalf("failed and still returned %d users", len(users))
-			}
-			return
+// FuzzParseIptablesRules feeds arbitrary rulesets to the firewall parser. The
+// verdict it derives for a port decides whether the new-interface wizard
+// offers to open that port, so for any input it has to be one of the four
+// verdicts, and walking the chains (jumps included) has to terminate.
+func FuzzParseIptablesRules(f *testing.F) {
+	seedFrom(f, "iptables")
+	f.Add("-N a\n-A INPUT -j a\n-A a -j INPUT\n")
+	f.Fuzz(func(t *testing.T, out string) {
+		fw := ParseIptablesRules(out)
+		switch v := fw.UDPPortVerdict(51820); v {
+		case VerdictAccept, VerdictReject, VerdictDrop, VerdictUnknown:
+		default:
+			t.Fatalf("verdict %q is not one of the four", v)
 		}
-		// OIDC inference must never panic on whatever came back.
-		_ = InferOIDC(users, nil)
+		_ = fw.Forwards("wg0")
 	})
 }
 
-func FuzzParseNodes(f *testing.F) {
-	seedFrom(f, "headscale-nodes")
+// FuzzParseRoutes feeds arbitrary JSON to the route parser, whose answer
+// proposes a forwarding server's networks and egress: whatever parses, the
+// proposals built from it must never be empty strings.
+func FuzzParseRoutes(f *testing.F) {
+	seedFrom(f, "ip-route")
 	f.Fuzz(func(t *testing.T, data string) {
-		nodes, err := ParseNodes([]byte(data))
+		routes, err := ParseRoutes([]byte(data))
 		if err != nil {
-			if nodes != nil {
-				t.Fatalf("failed and still returned %d nodes", len(nodes))
-			}
 			return
 		}
-		_ = InferOIDC(nil, nodes)
-	})
-}
-
-func FuzzParsePreAuthKeys(f *testing.F) {
-	seedFrom(f, "headscale-preauthkeys")
-	f.Fuzz(func(t *testing.T, data string) {
-		keys, err := ParsePreAuthKeys([]byte(data))
-		if err != nil {
-			if keys != nil {
-				t.Fatalf("failed and still returned %d keys", len(keys))
-			}
-			return
-		}
-		for _, k := range keys {
-			// The whole key must never survive: only a bounded prefix is kept.
-			if len(k.KeyPrefix) > keyPrefixLen {
-				t.Fatalf("key prefix longer than the cap: %q", k.KeyPrefix)
+		for _, n := range ForwardCandidates(routes, map[string]bool{"lo": true}) {
+			if n == "" {
+				t.Fatalf("empty network proposed from %q", data)
 			}
 		}
+		_ = DefaultRouteDevice(routes)
 	})
 }
 

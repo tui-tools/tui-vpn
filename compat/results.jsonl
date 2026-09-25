@@ -1,2 +1,3 @@
-{"backend": "wireguard-tools", "date": "2026-09-24", "distro": "ubuntu-24.04", "result": "pass", "suite": "smoke", "tool": "tui-vpn", "version": "1.0.20210914"}
-{"backend": "headscale", "date": "2026-09-24", "distro": "ubuntu-24.04", "result": "pass", "suite": "smoke", "tool": "tui-vpn", "version": "0.29.3"}
+{"backend": "wireguard-tools", "date": "2026-09-24", "distro": "ubuntu-24.04", "result": "pass", "suite": "smoke", "tool": "tui-wireguard", "version": "1.0.20210914"}
+{"backend": "wireguard-tools", "date": "2026-09-25", "distro": "fedora-44", "result": "pass", "suite": "smoke", "tool": "tui-wireguard", "version": "1.0.20260223"}
+{"backend": "wireguard-tools", "date": "2026-09-25", "distro": "ubuntu-26.04", "result": "pass", "suite": "smoke", "tool": "tui-wireguard", "version": "1.0.20250521"}

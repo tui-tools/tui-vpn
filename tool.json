@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
-  "name": "tui-vpn",
-  "binary": "tui-vpn",
-  "tagline": "WireGuard and its control plane, from the terminal",
-  "description": "WireGuard from the terminal, together with the self-hosted control plane that decides who is allowed onto it.\n\nThe status screen reads your interfaces straight from `wg show all dump`: peers, endpoints, handshakes, transfer, allowed IPs and keepalive. Every change, from creating an interface (a forwarding server included, with its iptables rules) to adding a peer, is previewed as the exact command line and applied only after you confirm it. A private key is never shown, typed, or put on a command line.\n\nWith a [Headscale](https://headscale.net) control plane it also manages users, nodes (and their advertised routes) and pre-auth keys, and configures the server itself: `S` sets how clients reach it (plain http, Let's Encrypt, an own certificate or a reverse proxy, plus the MagicDNS domain), `O` writes the `oidc` section, each as a minimal diff of `/etc/headscale/config.yaml` followed by a restart, or the enable a disabled unit needs. `F` fixes state files the service account does not own. The OIDC client secret is typed masked, written mode 600 to its own file, and never displayed again.\n\nRun it with `--demo` to see every screen with nothing installed.",
-  "category": "network",
-  "homepage": "https://github.com/tui-tools/tui-vpn",
-  "repo": "https://github.com/tui-tools/tui-vpn",
+  "name": "tui-wireguard",
+  "binary": "tui-wireguard",
+  "tagline": "WireGuard interfaces and peers, from the terminal",
+  "description": "WireGuard interfaces and their peers from the terminal, and the host around them.\n\nThe interfaces screen reads `wg show all dump`: each interface's state, listen port and peer count, plus whether the host firewall lets a handshake reach the port and whether the host forwards for it. The peers screen shows endpoints, handshakes, transfer, allowed IPs and keepalive.\n\nEvery change is previewed as the exact command line and applied only after you confirm it: creating an interface from zero (an endpoint, or a forwarding server with its `ip_forward`, FORWARD and MASQUERADE rules and its listen port opened in INPUT), bringing one up or down, adding or removing a peer (optionally with a generated pre-shared key) and saving the runtime config. A private key is never shown, typed, or put on a command line.\n\nThis tool was called tui-vpn up to 0.4.x. The Headscale control plane it used to manage moved to [tui-tailscale](https://tui.tools/tools/tui-tailscale/).\n\nRun it with `--demo` to see every screen with nothing installed.",
+  "category": "vpn",
+  "homepage": "https://github.com/tui-tools/tui-wireguard",
+  "repo": "https://github.com/tui-tools/tui-wireguard",
   "license": "MIT",
   "platforms": [
     "linux/amd64",
@@ -16,30 +16,26 @@
   "logo": "assets/logo.png",
   "screenshots": [
     {
-      "path": "docs/screenshots/tui-vpn-status.png",
-      "caption": "The status screen: WireGuard interfaces, their state, whether the host firewall opens the port and forwards for them, and peer counts"
+      "path": "docs/screenshots/tui-wireguard-status.png",
+      "caption": "The interfaces screen: state, listen port, whether the host firewall opens the port and forwards for the interface, and peer counts"
     },
     {
-      "path": "docs/screenshots/tui-vpn-peers.png",
-      "caption": "The peers screen: endpoints, handshake age and transfer for the selected interface"
+      "path": "docs/screenshots/tui-wireguard-peers.png",
+      "caption": "The peers screen: endpoints, handshake age, transfer and allowed IPs for the selected interface"
     },
     {
-      "path": "docs/screenshots/tui-vpn-users.png",
-      "caption": "The users screen under the control-plane panel: unit state, file ownership, transport, base domain, redirect URI, the IdP, and that a secret is set"
+      "path": "docs/screenshots/tui-wireguard-new.png",
+      "caption": "Creating a forwarding server: the conf, with its PostUp and PostDown rules, previewed before it is written"
     },
     {
-      "path": "docs/screenshots/tui-vpn-headscale.png",
-      "caption": "The Headscale nodes screen: who owns each node, its state, and its advertised routes with what is approved and what is pending"
-    },
-    {
-      "path": "docs/screenshots/tui-vpn-help.png",
-      "caption": "The help screen: keys, and how identity works over OIDC"
+      "path": "docs/screenshots/tui-wireguard-help.png",
+      "caption": "The help screen: every key, and what each change does before it runs"
     }
   ],
   "keys": [
     {
-      "key": "tab / 1…5",
-      "action": "Switch screen (interfaces, peers, users, nodes, keys)"
+      "key": "tab / 1 / 2",
+      "action": "Switch screen (interfaces, peers)"
     },
     {
       "key": "N",
@@ -58,28 +54,8 @@
       "action": "Add / remove a peer on the interface (add: optional pre-shared key file)"
     },
     {
-      "key": "n",
-      "action": "Create a Headscale user (users screen) or pre-auth key (keys screen)"
-    },
-    {
-      "key": "S / O",
-      "action": "Control plane (users screen): server and transport / OIDC provider (Google, generic)"
-    },
-    {
-      "key": "F",
-      "action": "Fix ownership of headscale's state, secret and backup files (users screen)"
-    },
-    {
-      "key": "r (nodes)",
-      "action": "Approve / revoke a node's advertised routes (subnet router, exit node)"
-    },
-    {
-      "key": "e / m / x",
-      "action": "Expire / rename / delete the selected node"
-    },
-    {
       "key": "r / ctrl+r",
-      "action": "Reload (ctrl+r on the nodes screen, where r is routes)"
+      "action": "Reload"
     },
     {
       "key": "?",
@@ -105,30 +81,9 @@
         "/bin/wg"
       ],
       "tested": [
-        "1.0.20210914"
-      ]
-    },
-    {
-      "name": "headscale",
-      "binary": "headscale",
-      "versionCommand": [
-        "headscale",
-        "version"
-      ],
-      "versionRegex": "v?([0-9][0-9.]*)",
-      "minimum": "0.22.0",
-      "searchPaths": [
-        "/usr/bin/headscale",
-        "/usr/local/bin/headscale"
-      ],
-      "notes": [
-        {
-          "range": "<0.23",
-          "impact": "`preauthkeys list` requires a `--user`, so the pre-auth keys screen may be empty; users and nodes are unaffected"
-        }
-      ],
-      "tested": [
-        "0.29.3"
+        "1.0.20210914",
+        "1.0.20250521",
+        "1.0.20260223"
       ]
     }
   ],
@@ -136,55 +91,54 @@
     "repo_url": "https://pkgs.tui.tools",
     "source": {
       "available": true,
-      "command": "git clone https://github.com/tui-tools/tui-vpn\ncd tui-vpn && make demo",
-      "url": "https://github.com/tui-tools/tui-vpn"
+      "command": "git clone https://github.com/tui-tools/tui-wireguard\ncd tui-wireguard && make demo",
+      "url": "https://github.com/tui-tools/tui-wireguard"
     },
     "pacman": {
       "available": false,
-      "package": "tui-vpn",
+      "package": "tui-wireguard",
       "repo": "tui-tools",
       "requires_repo_setup": true,
-      "command": "sudo pacman -S tui-vpn",
+      "command": "sudo pacman -S tui-wireguard",
       "url": "https://pkgs.tui.tools/arch",
       "note": "Available once the first release lands in pkgs.tui.tools."
     },
     "apt": {
       "available": false,
-      "package": "tui-vpn",
+      "package": "tui-wireguard",
       "repo": "tui-tools",
       "requires_repo_setup": true,
-      "command": "sudo apt install tui-vpn",
+      "command": "sudo apt install tui-wireguard",
       "url": "https://pkgs.tui.tools/deb",
       "note": "Available once the first release lands in pkgs.tui.tools."
     },
     "dnf": {
       "available": false,
-      "package": "tui-vpn",
+      "package": "tui-wireguard",
       "repo": "tui-tools",
       "requires_repo_setup": true,
-      "command": "sudo dnf install tui-vpn",
+      "command": "sudo dnf install tui-wireguard",
       "url": "https://pkgs.tui.tools/rpm",
       "note": "Available once the first release lands in pkgs.tui.tools."
     },
     "binary": {
       "available": false,
-      "pattern": "tui-vpn_{version}_linux_{arch}.tar.gz",
-      "command": "curl -fsSL https://github.com/tui-tools/tui-vpn/releases/download/v{version}/tui-vpn_{version}_linux_{arch}.tar.gz | tar -xz tui-vpn\nsudo install -m0755 tui-vpn /usr/local/bin/tui-vpn",
-      "url": "https://github.com/tui-tools/tui-vpn/releases",
+      "pattern": "tui-wireguard_{version}_linux_{arch}.tar.gz",
+      "command": "curl -fsSL https://github.com/tui-tools/tui-wireguard/releases/download/v{version}/tui-wireguard_{version}_linux_{arch}.tar.gz | tar -xz tui-wireguard\nsudo install -m0755 tui-wireguard /usr/local/bin/tui-wireguard",
+      "url": "https://github.com/tui-tools/tui-wireguard/releases",
       "note": "Available once the first release is tagged."
     }
   },
   "security": {
-    "needs_sudo": "Reading WireGuard needs CAP_NET_ADMIN, the Headscale CLI talks to a root-owned socket, and config.yaml, headscale's state directory and the iptables ruleset are root-only, so those reads escalate; `ip` and `systemctl is-active` do not. Every mutation escalates, previewed and confirmed first.",
+    "needs_sudo": "Reading WireGuard needs CAP_NET_ADMIN and the iptables ruleset is root-only, so those reads escalate; `ip` does not. Every mutation escalates, previewed and confirmed first.",
     "preview_before_run": true,
     "no_daemon": true,
-    "no_network": false,
-    "no_network_note": "On demand only: configuring an identity provider (or --check --probe-issuer) fetches the issuer's public /.well-known/openid-configuration with curl to check the URL. Read-only, unprivileged; a failure is a warning, not a refusal. Nothing else leaves the machine.",
+    "no_network": true,
     "static_binary": true,
     "signed_releases": false,
     "config_paths": [
-      "/etc/tui-vpn/config.toml",
-      "~/.config/tui-vpn/config.toml"
+      "/etc/tui-wireguard/config.toml",
+      "~/.config/tui-wireguard/config.toml"
     ]
   },
   "maintainers": [
@@ -194,11 +148,14 @@
     }
   ],
   "since": "2026-08-30",
+  "stability": "beta",
   "keywords": [
     "wireguard",
     "vpn",
-    "headscale",
-    "oidc",
+    "wg-quick",
+    "peers",
+    "forwarding",
+    "nat",
     "network"
   ]
 }

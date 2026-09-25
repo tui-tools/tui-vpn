@@ -157,78 +157,6 @@ func TestPSKPathIsFilenameSafe(t *testing.T) {
 	}
 }
 
-// --- headscale: pre-auth keys and nodes -------------------------------------
-
-func TestBuildCreatePreAuthKey(t *testing.T) {
-	cmd, err := BuildCreatePreAuthKey("2", true, true, "7d")
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
-	want := []string{"headscale", "preauthkeys", "create", "--user", "2",
-		"--reusable", "--ephemeral", "--expiration", "7d"}
-	if !reflect.DeepEqual(cmd.Argv, want) {
-		t.Errorf("argv = %q, want %q", cmd.Argv, want)
-	}
-
-	plain, err := BuildCreatePreAuthKey("2", false, false, "")
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
-	want = []string{"headscale", "preauthkeys", "create", "--user", "2", "--expiration", "24h"}
-	if !reflect.DeepEqual(plain.Argv, want) {
-		t.Errorf("default argv = %q, want the 24h default", plain.Argv)
-	}
-}
-
-func TestBuildCreatePreAuthKeyRejectsBadInput(t *testing.T) {
-	if _, err := BuildCreatePreAuthKey("ana", false, false, "24h"); err == nil {
-		t.Error("accepted a non-numeric user id")
-	}
-	if _, err := BuildCreatePreAuthKey("2; reboot", false, false, "24h"); err == nil {
-		t.Error("accepted an injected user id")
-	}
-	for _, bad := range []string{"24", "h", "24h; rm -rf /", "-24h", "24 h", "1y1d"} {
-		if _, err := BuildCreatePreAuthKey("2", false, false, bad); err == nil {
-			t.Errorf("accepted a bad expiration: %q", bad)
-		}
-	}
-}
-
-func TestBuildDeleteNode(t *testing.T) {
-	cmd, err := BuildDeleteNode("3")
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
-	want := []string{"headscale", "nodes", "delete", "--identifier", "3", "--force"}
-	if !reflect.DeepEqual(cmd.Argv, want) {
-		t.Errorf("argv = %q, want %q", cmd.Argv, want)
-	}
-	if !cmd.Destructive {
-		t.Error("deleting a node must be marked destructive")
-	}
-	for _, bad := range []string{"", "abc", "3; reboot", "-3"} {
-		if _, err := BuildDeleteNode(bad); err == nil {
-			t.Errorf("accepted a bad node id: %q", bad)
-		}
-	}
-}
-
-func TestBuildRenameNode(t *testing.T) {
-	cmd, err := BuildRenameNode("2", "build-box")
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
-	want := []string{"headscale", "nodes", "rename", "--identifier", "2", "build-box"}
-	if !reflect.DeepEqual(cmd.Argv, want) {
-		t.Errorf("argv = %q, want %q", cmd.Argv, want)
-	}
-	for _, bad := range []string{"", "-box", "a b", "a;b", "a_b", "box-", strings.Repeat("a", 64)} {
-		if _, err := BuildRenameNode("2", bad); err == nil {
-			t.Errorf("accepted a bad node name: %q", bad)
-		}
-	}
-}
-
 // TestNoNewBuilderEmitsAPrivateKey extends the package's core promise to the
 // manage builders: no argv token names a private key or carries one. The keygen
 // script mentions the key FILE it writes, but never a `private-key` flag and
@@ -243,9 +171,6 @@ func TestNoNewBuilderEmitsAPrivateKey(t *testing.T) {
 		{"write-conf", func() ([]string, error) { c, e := BuildWriteInterfaceConf("wg9", conf); return c.Argv, e }},
 		{"save", func() ([]string, error) { c, e := BuildSaveConfig("wg0"); return c.Argv, e }},
 		{"genpsk", func() ([]string, error) { c, e := BuildGeneratePSK("wg0", testPub); return c.Argv, e }},
-		{"preauth", func() ([]string, error) { c, e := BuildCreatePreAuthKey("1", true, false, "24h"); return c.Argv, e }},
-		{"delete", func() ([]string, error) { c, e := BuildDeleteNode("3"); return c.Argv, e }},
-		{"rename", func() ([]string, error) { c, e := BuildRenameNode("3", "box"); return c.Argv, e }},
 	}
 	for _, tc := range cmds {
 		argv, err := tc.make()
@@ -269,18 +194,6 @@ func TestManageValidators(t *testing.T) {
 	}
 	if ValidCIDR("192.0.2.1") || ValidCIDR("-192.0.2.1/24") || ValidCIDR("a b/24") {
 		t.Error("a non-CIDR should not validate")
-	}
-	if !ValidExpiration("24h") || !ValidExpiration("30m") || !ValidExpiration("7d") {
-		t.Error("a plain duration should validate")
-	}
-	if ValidExpiration("") || ValidExpiration("24h1m") || ValidExpiration("h") {
-		t.Error("a non-duration should not validate")
-	}
-	if !ValidNodeName("box") || !ValidNodeName("build-box-2") {
-		t.Error("a DNS-label name should validate")
-	}
-	if ValidNodeName("") || ValidNodeName("-box") || ValidNodeName("a b") {
-		t.Error("a non-label should not validate")
 	}
 }
 
@@ -364,70 +277,6 @@ func TestFakeAppliesSaveConfig(t *testing.T) {
 	bad, _ := BuildSaveConfig("nope0")
 	if _, err := f.Run(context.Background(), bad); err == nil {
 		t.Error("saving a missing interface should fail")
-	}
-}
-
-// TestFakeCreatePreAuthKeyShowsKeyOnce: the run answers the full key exactly
-// once, and the state keeps only a prefix — never the full key.
-func TestFakeCreatePreAuthKeyShowsKeyOnce(t *testing.T) {
-	ctx := context.Background()
-	f := NewFake()
-	cmd, err := BuildCreatePreAuthKey("1", true, false, "24h")
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
-	key, err := f.Run(ctx, cmd)
-	if err != nil {
-		t.Fatalf("run: %v", err)
-	}
-	if len(key) < 20 {
-		t.Fatalf("create answered %q, want a full key", key)
-	}
-	state, _ := f.Load(ctx)
-	keys := state.Headscale.PreAuthKeys
-	last := keys[len(keys)-1]
-	if !last.Reusable || last.Ephemeral {
-		t.Errorf("flags not applied: %+v", last)
-	}
-	if last.KeyPrefix == key {
-		t.Error("the state stores the full key; it must keep only the prefix")
-	}
-	if !strings.HasPrefix(key, last.KeyPrefix) {
-		t.Errorf("prefix %q does not match the key", last.KeyPrefix)
-	}
-}
-
-func TestFakeAppliesDeleteNode(t *testing.T) {
-	ctx := context.Background()
-	f := NewFake()
-	cmd, _ := BuildDeleteNode("3")
-	if _, err := f.Run(ctx, cmd); err != nil {
-		t.Fatalf("run: %v", err)
-	}
-	state, _ := f.Load(ctx)
-	for _, n := range state.Headscale.Nodes {
-		if n.ID == "3" {
-			t.Error("node 3 is still present after delete")
-		}
-	}
-}
-
-func TestFakeAppliesRenameNode(t *testing.T) {
-	ctx := context.Background()
-	f := NewFake()
-	cmd, _ := BuildRenameNode("2", "build-box")
-	if _, err := f.Run(ctx, cmd); err != nil {
-		t.Fatalf("run: %v", err)
-	}
-	state, _ := f.Load(ctx)
-	found := false
-	for _, n := range state.Headscale.Nodes {
-		if n.ID == "2" && n.GivenName == "build-box" {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("node 2 was not renamed")
 	}
 }
 

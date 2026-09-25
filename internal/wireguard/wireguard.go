@@ -1,18 +1,16 @@
-// Package wireguard is the part of tui-vpn that is about its own subject:
-// WireGuard interfaces and their peers, and — when a Headscale control plane
-// is present — the users, nodes and pre-authentication keys that decide who is
-// allowed onto the network. Everything generic (palette, widgets,
-// configuration, running commands) comes from tui-kit and is not repeated here.
+// Package wireguard is the part of tui-wireguard that is about its own
+// subject: WireGuard interfaces, their peers, and the host around them (the
+// routing table a forwarding server proposes its networks from, and the
+// firewall that decides whether a handshake reaches the listen port).
+// Everything generic (palette, widgets, configuration, running commands) comes
+// from tui-kit and is not repeated here.
 //
 // This package is also the tool's single exec site: the only place a process
 // is started (through the kit runner) is internal/wireguard, so the command
 // the confirm dialog showed is provably the command that ran. It drives a
-// handful of programs — `wg`, `wg-quick`, `headscale`, read-only `ip`,
-// `sh`/`install`/`cat` for the bootstrap and control-plane-configuration
-// flows, `systemctl` for the headscale unit, `iptables` for the host
-// firewall, and `curl` for the one read that leaves the machine (an IdP's
-// discovery document) — but every one of them
-// goes through the same runner boundary.
+// handful of programs — `wg`, `wg-quick`, read-only `ip`, `sh`/`install` for
+// the bootstrap flow, and `iptables` for the host firewall — but every one of
+// them goes through the same runner boundary.
 //
 // PRIVACY: a private key never leaves this package on an argv or in any
 // rendered value. A new interface's key pair is generated inside one root
@@ -35,10 +33,9 @@ import (
 	"github.com/tui-tools/tui-kit/runner"
 )
 
-// Screen is one of the five views the tool is made of. They are tabs because
-// they answer five separate questions: what is my WireGuard doing, who are its
-// peers, and — on the control plane — who exists, what is registered, and what
-// can still join.
+// Screen is one of the views the tool is made of. They are tabs because they
+// answer two separate questions: what is my WireGuard doing, and who are the
+// peers of the interface I selected.
 type Screen int
 
 const (
@@ -46,12 +43,6 @@ const (
 	ScreenStatus Screen = iota
 	// ScreenPeers lists the peers of the selected interface.
 	ScreenPeers
-	// ScreenUsers lists the Headscale users.
-	ScreenUsers
-	// ScreenNodes lists the Headscale nodes.
-	ScreenNodes
-	// ScreenKeys lists the Headscale pre-authentication keys.
-	ScreenKeys
 	// ScreenCount is the number of screens: it drives the tab bar and the
 	// per-screen cursor arrays.
 	ScreenCount
@@ -59,18 +50,10 @@ const (
 
 // Title is the tab label.
 func (s Screen) Title() string {
-	switch s {
-	case ScreenPeers:
+	if s == ScreenPeers {
 		return "peers"
-	case ScreenUsers:
-		return "users"
-	case ScreenNodes:
-		return "nodes"
-	case ScreenKeys:
-		return "preauth keys"
-	default:
-		return "interfaces"
 	}
+	return "interfaces"
 }
 
 // Device is one WireGuard interface. It never carries the private key: the most
@@ -86,8 +69,14 @@ type Device struct {
 	// FwMark is the firewall mark, "off" when unset.
 	FwMark string `json:"fwMark,omitempty"`
 	// Up reports whether the link is up, as `ip link` sees it.
-	Up    bool   `json:"up"`
-	Peers []Peer `json:"peers"`
+	Up bool `json:"up"`
+	// ConfigOnly reports an interface that has a configuration file in
+	// /etc/wireguard but no link: created and never brought up, or taken
+	// down. `wg show` does not list it, and without this it would vanish
+	// from the screen the moment `d` took it down, leaving nothing to press
+	// `u` on.
+	ConfigOnly bool   `json:"configOnly,omitempty"`
+	Peers      []Peer `json:"peers"`
 	// Forwarding reports that the host's FORWARD chain accepts traffic
 	// coming in on this interface: it is a forwarding server (see
 	// ForwardingRules). Read from the live ruleset.
@@ -116,102 +105,15 @@ type Peer struct {
 	Keepalive int `json:"keepalive"`
 }
 
-// Headscale is the state of the control plane, when one is reachable.
-type Headscale struct {
-	// Present reports that the headscale binary was found and answered.
-	Present bool `json:"present"`
-	// Error carries why a present control plane could not be read: the CLI's
-	// own error, or — when the unit is known to be stopped and the CLI was
-	// not asked at all — what to do about it (see NotRunningMessage).
-	Error string `json:"error,omitempty"`
-	// NotRunning reports that the lists were not read because the headscale
-	// unit is not running; Error then says how to start it.
-	NotRunning bool `json:"notRunning,omitempty"`
-	// OIDCInferred reports that user identity looks like it comes from an
-	// external OpenID Connect provider — guessed from a user carrying a
-	// provider, or a node that registered through OIDC. It is the fallback
-	// answer, kept for the host whose config.yaml cannot be read; the honest
-	// answer comes from ControlPlane, and OIDCEnabled prefers it.
-	OIDCInferred bool `json:"oidcInferred"`
-	// ControlPlane is what /etc/headscale/config.yaml says: the URL clients
-	// reach this server on, and the IdP it federates identity to. This is the
-	// whole point of the design — login happens in the client's browser
-	// against the IdP, and the server exposes no web admin of its own — so it
-	// is also the one thing the tool has to be able to configure.
-	ControlPlane ControlPlane `json:"controlPlane"`
-	Users        []User       `json:"users"`
-	Nodes        []Node       `json:"nodes"`
-	PreAuthKeys  []PreAuthKey `json:"preAuthKeys"`
-}
-
-// OIDCEnabled is whether identity really is federated: read from the
-// configuration when it could be read, and only otherwise guessed from who has
-// logged in so far.
-func (h Headscale) OIDCEnabled() bool {
-	if h.ControlPlane.Readable {
-		return h.ControlPlane.OIDC.Configured()
-	}
-	return h.OIDCInferred
-}
-
-// User is a Headscale user. Its identity, when OIDC is configured, is owned by
-// the IdP; headscale only mirrors it.
-type User struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	DisplayName string    `json:"displayName,omitempty"`
-	Email       string    `json:"email,omitempty"`
-	Provider    string    `json:"provider,omitempty"`
-	ProviderID  string    `json:"providerId,omitempty"`
-	CreatedAt   time.Time `json:"createdAt,omitempty"`
-}
-
-// Node is a machine registered with Headscale, owned by one user.
-type Node struct {
-	ID             string    `json:"id"`
-	Name           string    `json:"name"`
-	GivenName      string    `json:"givenName,omitempty"`
-	User           string    `json:"user"`
-	IPAddresses    []string  `json:"ipAddresses"`
-	LastSeen       time.Time `json:"lastSeen,omitempty"`
-	Expiry         time.Time `json:"expiry,omitempty"`
-	Online         bool      `json:"online"`
-	RegisterMethod string    `json:"registerMethod,omitempty"`
-	// AvailableRoutes are the routes the node advertises (subnet routes, and
-	// 0.0.0.0/0 with ::/0 for an exit node); ApprovedRoutes the ones an admin
-	// approved; SubnetRoutes the ones actually served, advertised and
-	// approved. See routes.go.
-	AvailableRoutes []string `json:"availableRoutes,omitempty"`
-	ApprovedRoutes  []string `json:"approvedRoutes,omitempty"`
-	SubnetRoutes    []string `json:"subnetRoutes,omitempty"`
-}
-
-// PreAuthKey is a key that lets a machine register itself for a user without a
-// browser login. Headscale only ever shows its prefix on a list, never the
-// whole key, and neither do we.
-type PreAuthKey struct {
-	ID         string    `json:"id"`
-	User       string    `json:"user"`
-	KeyPrefix  string    `json:"keyPrefix,omitempty"`
-	Reusable   bool      `json:"reusable"`
-	Ephemeral  bool      `json:"ephemeral"`
-	Used       bool      `json:"used"`
-	Expiration time.Time `json:"expiration,omitempty"`
-	CreatedAt  time.Time `json:"createdAt,omitempty"`
-	ACLTags    []string  `json:"aclTags,omitempty"`
-}
-
-// State is everything one read produces: the WireGuard side and the control
-// plane side, each able to be empty without the other failing.
+// State is everything one read produces: the interfaces and the host facts
+// around them, each able to be empty without the others failing.
 type State struct {
 	// WGAvailable reports that the wg binary was found.
 	WGAvailable bool `json:"wgAvailable"`
 	// WGError carries why an available wg could not be read (usually: no
-	// privilege). It is not fatal — the control plane may still have answers.
+	// privilege). It is not fatal: the host facts may still have answers.
 	WGError string   `json:"wgError,omitempty"`
 	Devices []Device `json:"devices"`
-
-	Headscale Headscale `json:"headscale"`
 
 	// Routes is `ip -j route`, the source of the networks and the egress a
 	// new forwarding server proposes. Firewall is `iptables -S`. Neither is
@@ -256,29 +158,11 @@ const (
 	ActionInterfaceDown Action = "interface-down"
 	// ActionRemovePeer removes a peer from an interface.
 	ActionRemovePeer Action = "remove-peer"
-	// ActionExpireNode expires a Headscale node's key.
-	ActionExpireNode Action = "expire-node"
-	// ActionCreateUser creates a Headscale user.
-	ActionCreateUser Action = "create-user"
 	// ActionCreateInterface bootstraps a new WireGuard interface from zero:
 	// keygen, config file, optional up.
 	ActionCreateInterface Action = "create-interface"
 	// ActionSaveConfig persists an interface's runtime state with wg-quick save.
 	ActionSaveConfig Action = "save-config"
-	// ActionCreatePreAuthKey creates a Headscale pre-authentication key.
-	ActionCreatePreAuthKey Action = "create-preauthkey"
-	// ActionDeleteNode deletes a Headscale node.
-	ActionDeleteNode Action = "delete-node"
-	// ActionRenameNode renames a Headscale node.
-	ActionRenameNode Action = "rename-node"
-	// ActionServerSettings writes server_url and listen_addr into headscale's
-	// configuration and restarts the service.
-	ActionServerSettings Action = "server-settings"
-	// ActionApproveRoutes sets the routes a node is approved to serve.
-	ActionApproveRoutes Action = "approve-routes"
-	// ActionOIDCSettings writes the oidc section — and the client secret into
-	// its own root-only file — and restarts the service.
-	ActionOIDCSettings Action = "oidc-settings"
 )
 
 // keyPattern is a WireGuard key on the wire: 43 base64 characters and a '='.
@@ -379,32 +263,42 @@ func BuildAddPeer(iface, publicKey string, allowedIPs []string, presharedKeyFile
 	}, nil
 }
 
-// BuildExpireNode assembles `headscale nodes expire --identifier <id>`.
-func BuildExpireNode(nodeID string) (runner.Command, error) {
-	if !validID(nodeID) {
-		return runner.Command{}, fmt.Errorf("not a valid node id: %q", nodeID)
-	}
-	return runner.Command{
-		Argv:        []string{"headscale", "nodes", "expire", "--identifier", nodeID},
-		Description: "Expire node " + nodeID,
-		Destructive: true,
-	}, nil
-}
-
-// BuildCreateUser assembles `headscale users create <name>`.
-func BuildCreateUser(name string) (runner.Command, error) {
-	name = strings.TrimSpace(name)
-	if name == "" || strings.HasPrefix(name, "-") || strings.ContainsAny(name, " \t\n/") {
-		return runner.Command{}, fmt.Errorf("not a valid user name: %q", name)
-	}
-	return runner.Command{
-		Argv:        []string{"headscale", "users", "create", name},
-		Description: "Create user " + name,
-	}, nil
-}
+// ConfDir is where wg-quick looks for interface configurations.
+const ConfDir = "/etc/wireguard"
 
 // ConfPath is where wg-quick expects an interface's configuration file.
-func ConfPath(iface string) string { return "/etc/wireguard/" + iface + ".conf" }
+func ConfPath(iface string) string { return ConfDir + "/" + iface + ".conf" }
+
+// ParseConfNames reads a listing of ConfDir into the interface names that
+// have a configuration: every `<name>.conf` whose name is a valid interface
+// name. Keys, pre-shared keys and anything else in the directory are skipped.
+func ParseConfNames(listing string) []string {
+	var names []string
+	for _, line := range strings.Split(listing, "\n") {
+		name, ok := strings.CutSuffix(strings.TrimSpace(line), ".conf")
+		if ok && ValidInterface(name) {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// MergeConfigured appends a down, config-only device for each configured name
+// that is not already a live device, keeping the live ones first and in the
+// order `wg show` gave them.
+func MergeConfigured(devices []Device, names []string) []Device {
+	live := make(map[string]bool, len(devices))
+	for _, d := range devices {
+		live[d.Name] = true
+	}
+	for _, name := range names {
+		if !live[name] {
+			devices = append(devices, Device{Name: name, ConfigOnly: true})
+			live[name] = true
+		}
+	}
+	return devices
+}
 
 // KeyPath is where the tool keeps an interface's private key: a root-only file
 // next to the configuration, which `wg set … private-key` reads itself.
@@ -557,61 +451,6 @@ func BuildGeneratePSK(iface, peerPublicKey string) (runner.Command, error) {
 	}, nil
 }
 
-// BuildCreatePreAuthKey assembles `headscale preauthkeys create`. The created
-// key is printed once by headscale itself; the caller shows it once and never
-// stores it — the same contract headscale's own CLI has.
-func BuildCreatePreAuthKey(userID string, reusable, ephemeral bool, expiration string) (runner.Command, error) {
-	if !validID(userID) {
-		return runner.Command{}, fmt.Errorf("not a valid user id: %q", userID)
-	}
-	if expiration == "" {
-		expiration = "24h"
-	}
-	if !ValidExpiration(expiration) {
-		return runner.Command{}, fmt.Errorf("not a valid expiration (try 24h, 30m, 7d): %q", expiration)
-	}
-	argv := []string{"headscale", "preauthkeys", "create", "--user", userID}
-	if reusable {
-		argv = append(argv, "--reusable")
-	}
-	if ephemeral {
-		argv = append(argv, "--ephemeral")
-	}
-	argv = append(argv, "--expiration", expiration)
-	return runner.Command{
-		Argv:        argv,
-		Description: "Create pre-auth key for user " + userID,
-	}, nil
-}
-
-// BuildDeleteNode assembles `headscale nodes delete`. --force skips
-// headscale's own prompt because this tool's confirm dialog already is the
-// prompt, and a nested interactive question would hang the runner.
-func BuildDeleteNode(nodeID string) (runner.Command, error) {
-	if !validID(nodeID) {
-		return runner.Command{}, fmt.Errorf("not a valid node id: %q", nodeID)
-	}
-	return runner.Command{
-		Argv:        []string{"headscale", "nodes", "delete", "--identifier", nodeID, "--force"},
-		Description: "Delete node " + nodeID,
-		Destructive: true,
-	}, nil
-}
-
-// BuildRenameNode assembles `headscale nodes rename`.
-func BuildRenameNode(nodeID, name string) (runner.Command, error) {
-	if !validID(nodeID) {
-		return runner.Command{}, fmt.Errorf("not a valid node id: %q", nodeID)
-	}
-	if !ValidNodeName(name) {
-		return runner.Command{}, fmt.Errorf("not a valid node name: %q", name)
-	}
-	return runner.Command{
-		Argv:        []string{"headscale", "nodes", "rename", "--identifier", nodeID, name},
-		Description: "Rename node " + nodeID + " to " + name,
-	}, nil
-}
-
 // cidrPattern is an address with a mandatory /prefix: the Address= line of an
 // interface needs the prefix length, and the shape rules out anything that
 // could become a second argument or an ini injection.
@@ -620,33 +459,6 @@ var cidrPattern = regexp.MustCompile(`^[0-9A-Fa-f:.]+/[0-9]{1,3}$`)
 // ValidCIDR reports whether s is a plausible address-with-prefix.
 func ValidCIDR(s string) bool {
 	return s != "" && !strings.HasPrefix(s, "-") && cidrPattern.MatchString(s)
-}
-
-// expirationPattern is a simple duration: an integer and one unit letter, the
-// forms headscale documents (30m, 24h, 7d…).
-var expirationPattern = regexp.MustCompile(`^[0-9]{1,5}[smhdwy]$`)
-
-// ValidExpiration reports whether s is a plausible pre-auth key expiration.
-func ValidExpiration(s string) bool { return expirationPattern.MatchString(s) }
-
-// nodeNamePattern is a DNS-label-shaped machine name, which is what headscale
-// accepts for a rename.
-var nodeNamePattern = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
-
-// ValidNodeName reports whether s is a plausible node name.
-func ValidNodeName(s string) bool { return nodeNamePattern.MatchString(s) }
-
-// validID reports whether s is a bare non-negative integer id.
-func validID(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
 }
 
 // allowedIPPattern is a CIDR or a bare address: digits, hex, dots, colons and a
@@ -667,16 +479,11 @@ type Backend interface {
 	// Describe is the one-line summary shown in the header.
 	Describe() string
 	// Load reads the current state. It never fails as a whole: a missing wg or
-	// a missing control plane is a fact in the State, not an error.
+	// an unreadable firewall is a fact in the State, not an error.
 	Load(ctx context.Context) (State, error)
 	// Preview renders the exact command line Run will execute, routing to the
 	// right binary so the privilege prefix shown is the one that will apply.
 	Preview(cmd runner.Command) string
 	// Run executes a previously previewed command.
 	Run(ctx context.Context, cmd runner.Command) (string, error)
-	// Stat reads owner, group and mode of the given paths — a read, like
-	// Load's, with no confirm. A path that does not exist is absent from the
-	// answer. The server-settings form uses it to check that the service
-	// account can read a certificate before it writes the path down.
-	Stat(ctx context.Context, paths []string) map[string]FileStat
 }

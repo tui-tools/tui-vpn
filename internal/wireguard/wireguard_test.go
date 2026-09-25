@@ -77,7 +77,7 @@ func TestBuildAddPeerRejectsBadInput(t *testing.T) {
 // value on the command line, so it can never appear in the confirm dialog or in
 // ps. The path is the last argument, after the "preshared-key" token.
 func TestPresharedKeyIsAFilePathNotAValue(t *testing.T) {
-	add, err := BuildAddPeer("wg0", testPub, []string{"192.0.2.5/32"}, "/run/tui-vpn/psk")
+	add, err := BuildAddPeer("wg0", testPub, []string{"192.0.2.5/32"}, "/run/tui-wireguard/psk")
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestPresharedKeyIsAFilePathNotAValue(t *testing.T) {
 	if i < 0 || i+1 >= len(add.Argv) {
 		t.Fatalf("no preshared-key argument: %q", add.Argv)
 	}
-	if add.Argv[i+1] != "/run/tui-vpn/psk" {
+	if add.Argv[i+1] != "/run/tui-wireguard/psk" {
 		t.Errorf("preshared-key argument = %q, want the file path", add.Argv[i+1])
 	}
 }
@@ -106,8 +106,6 @@ func TestNoBuilderEmitsAPrivateKey(t *testing.T) {
 			c, e := BuildAddPeer("wg0", testPub, []string{"192.0.2.5/32"}, "/run/psk")
 			return c.Argv, e
 		}},
-		{"expire", func() ([]string, error) { c, e := BuildExpireNode("3"); return c.Argv, e }},
-		{"user", func() ([]string, error) { c, e := BuildCreateUser("dana"); return c.Argv, e }},
 	}
 	for _, tc := range cmds {
 		argv, err := tc.make()
@@ -141,4 +139,25 @@ func indexOf(s []string, v string) int {
 		}
 	}
 	return -1
+}
+
+// An interface that is down has no link and no line in `wg show`, only its
+// conf. The listing of /etc/wireguard brings it back on screen, and nothing
+// else in that directory is mistaken for an interface.
+func TestConfiguredInterfacesAreListed(t *testing.T) {
+	listing := "wg0.conf\nwg0.key\nwg1.conf\nwg0-AAAAAAAA.psk\n-x.conf\nnotes.txt\nbad name.conf\n"
+	names := ParseConfNames(listing)
+	if strings.Join(names, ",") != "wg0,wg1" {
+		t.Fatalf("names = %q, want wg0 and wg1", names)
+	}
+	devices := MergeConfigured([]Device{{Name: "wg0", Up: true}}, names)
+	if len(devices) != 2 {
+		t.Fatalf("devices = %+v, want the live wg0 and the configured wg1", devices)
+	}
+	if devices[0].ConfigOnly || !devices[0].Up {
+		t.Errorf("the live interface changed: %+v", devices[0])
+	}
+	if devices[1].Name != "wg1" || !devices[1].ConfigOnly || devices[1].Up {
+		t.Errorf("wg1 should be listed down and config-only: %+v", devices[1])
+	}
 }

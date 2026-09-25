@@ -27,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     # Code scanning needs GitHub Advanced Security, which a private
     # repository on this plan does not have: the upload step fails with
-    # "Advanced Security must be enabled for this repository". tui-vpn is
+    # "Advanced Security must be enabled for this repository". tui-wireguard is
     # private until its first release, so the job is skipped while it is, and
     # starts running by itself on the day the repository is made public. The
     # workflow is otherwise the family's, unmodified.
