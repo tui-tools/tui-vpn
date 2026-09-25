@@ -68,40 +68,6 @@ func TestFakeAppliesRemovePeer(t *testing.T) {
 	}
 }
 
-func TestFakeAppliesExpireNode(t *testing.T) {
-	ctx := context.Background()
-	f := NewFake()
-	cmd, _ := BuildExpireNode("1")
-	if _, err := f.Run(ctx, cmd); err != nil {
-		t.Fatalf("run: %v", err)
-	}
-	state, _ := f.Load(ctx)
-	for _, n := range state.Headscale.Nodes {
-		if n.ID == "1" && (n.Expiry.IsZero() || n.Online) {
-			t.Errorf("node 1 should be expired and offline: %+v", n)
-		}
-	}
-}
-
-func TestFakeAppliesCreateUser(t *testing.T) {
-	ctx := context.Background()
-	f := NewFake()
-	cmd, _ := BuildCreateUser("dana")
-	if _, err := f.Run(ctx, cmd); err != nil {
-		t.Fatalf("run: %v", err)
-	}
-	state, _ := f.Load(ctx)
-	found := false
-	for _, u := range state.Headscale.Users {
-		if u.Name == "dana" {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("the new user is missing after create")
-	}
-}
-
 // The demo public keys must be valid WireGuard-shaped keys, so the UI renders
 // them the way real ones would.
 func TestDemoKeysAreWellFormed(t *testing.T) {

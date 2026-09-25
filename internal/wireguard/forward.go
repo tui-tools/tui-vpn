@@ -91,6 +91,21 @@ type ForwardSpec struct {
 	Egress   string
 }
 
+// SplitList reads a human-typed list, separated by commas or spaces, into
+// its entries.
+func SplitList(s string) []string {
+	fields := strings.FieldsFunc(s, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n'
+	})
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		if f = strings.TrimSpace(f); f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 // ParseNetworks reads the typed "forwards traffic for" list: IPv4 networks in
 // CIDR form, normalised to their network address. IPv6 is refused rather than
 // half-done: the rules are iptables, not ip6tables.

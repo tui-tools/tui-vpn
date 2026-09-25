@@ -22,18 +22,6 @@ import (
 type Fake struct {
 	mu    sync.Mutex
 	state State
-	// config is the demo's /etc/headscale/config.yaml, kept as text so the
-	// control-plane flows are exercised for real: the diff the confirm dialog
-	// shows under --demo is computed by the same editor that runs on a router.
-	config string
-	// serviceState and serviceEnabled are the demo unit's is-active and
-	// is-enabled answers. They live outside the parsed state so a re-read of
-	// the configuration keeps them, the way a real re-read would.
-	serviceState, serviceEnabled string
-	// stats is the demo's filesystem as `stat` would report it: who owns
-	// headscale's state files and the files this tool writes. chown applies to
-	// it, and the ownership check reads it, exactly like the real ones.
-	stats map[string]FileStat
 	// firewall is the demo's `iptables -S`, as lines: the ruleset of a cloud
 	// image whose INPUT and FORWARD chains end in REJECT, with the demo
 	// interface's port opened and its forwarding rules in place. The
@@ -56,8 +44,6 @@ const (
 	// created from zero. Only ever a public key: the demo, like the real
 	// backend, has no private key to show.
 	demoNewIfacePub = "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD="
-	// demoNewPreAuthKey is the one-time key the demo "creates". Plainly fake.
-	demoNewPreAuthKey = "demodemodemodemodemodemodemodemodemodemo1234"
 )
 
 // DemoIfacePub, DemoPeer1Pub and DemoPeer2Pub expose the placeholder public
@@ -66,183 +52,14 @@ func DemoIfacePub() string { return demoIfacePub }
 func DemoPeer1Pub() string { return demoPeer1Pub }
 func DemoPeer2Pub() string { return demoPeer2Pub }
 
-// NewFake returns a Fake preloaded with a plausible network: one interface with
-// two peers — one mid-handshake, one that has never connected — and a Headscale
-// control plane with two users, four nodes (one of them a subnet router with
-// routes pending) and a pre-auth key.
+// NewFake returns a Fake preloaded with a plausible network: one forwarding
+// interface with two peers, one mid-handshake and one that has never
+// connected, on a host whose firewall ends INPUT and FORWARD in REJECT.
 func NewFake() *Fake {
-	// The demo unit is running but disabled: started by hand after the
-	// package installed it, the way a fresh install usually ends up, and
-	// gone after the next reboot. It is what makes the enable at the end of
-	// S and O visible under --demo.
-	f := &Fake{state: demoState(), config: demoHeadscaleConfig,
-		serviceState: "active", serviceEnabled: "disabled", stats: demoStats(),
+	f := &Fake{state: demoState(),
 		firewall: append([]string(nil), demoFirewall...), confs: map[string]string{}}
 	f.run = &runner.Fake{Hook: f.apply}
-	f.reloadControlPlane()
 	return f
-}
-
-// demoHeadscaleConfig is a plausible, already-configured headscale
-// configuration: enough of the real file's shape — comments, blank lines,
-// nested sections — that editing it in the demo proves the editor keeps
-// everything it does not touch. Every host in it is a documentation name.
-const demoHeadscaleConfig = `# headscale configuration (demo)
-
-# Behind a reverse proxy: TLS ends in front, headscale listens on loopback.
-server_url: https://vpn.example.com
-listen_addr: 127.0.0.1:8080
-metrics_listen_addr: 127.0.0.1:9090
-
-tls_letsencrypt_hostname: ""
-tls_cert_path: ""
-tls_key_path: ""
-
-# The pre-shared key file for DERP, unrelated to OIDC.
-noise:
-  private_key_path: /var/lib/headscale/noise_private.key
-
-database:
-  type: sqlite
-  sqlite:
-    path: /var/lib/headscale/db.sqlite
-
-prefixes:
-  v4: 100.64.0.0/10
-
-oidc:
-  only_start_if_oidc_is_available: true
-  issuer: https://idp.example.com/realms/demo
-  client_id: headscale
-  client_secret_path: /etc/headscale/oidc_client_secret
-  scope: ["openid", "profile", "email"]
-  allowed_domains: ["example.com"]
-  allowed_groups: []
-  allowed_users: []
-  pkce:
-    enabled: true
-
-dns:
-  magic_dns: true
-  base_domain: tailnet.example.net
-
-log:
-  level: info
-`
-
-// demoStats is the demo's filesystem. Everything belongs where it should
-// except the noise private key, which is root's: the leftover of a
-// `sudo headscale configtest` run before the first start. It is mode 644, so
-// the running demo server could still read it, which keeps the demo coherent;
-// on a real host the same mistake is usually 600 and the service fails.
-func demoStats() map[string]FileStat {
-	stats := map[string]FileStat{}
-	for _, st := range []FileStat{
-		{Path: HeadscaleStateDir, User: "headscale", Group: "headscale", Mode: 0o750},
-		{Path: HeadscaleStateDir + "/noise_private.key", User: "root", Group: "root", Mode: 0o644},
-		{Path: HeadscaleStateDir + "/db.sqlite", User: "headscale", Group: "headscale", Mode: 0o640},
-		{Path: OIDCClientSecretPath, User: "headscale", Group: "headscale", Mode: 0o600},
-		{Path: HeadscaleConfigPath, User: "root", Group: "root", Mode: 0o644},
-		// Two certificate pairs for the own-certificate transport: the one
-		// tui-cert issues into its root-only directory, which the service
-		// account cannot enter, and a copy installed for headscale.
-		{Path: "/etc", User: "root", Group: "root", Mode: 0o755},
-		{Path: "/etc/headscale", User: "root", Group: "root", Mode: 0o755},
-		{Path: "/etc/ssl", User: "root", Group: "root", Mode: 0o755},
-		{Path: "/etc/ssl/tui-cert", User: "root", Group: "root", Mode: 0o700},
-		{Path: "/etc/ssl/tui-cert/vpn.example.com.crt", User: "root", Group: "root", Mode: 0o644},
-		{Path: "/etc/ssl/tui-cert/vpn.example.com.key", User: "root", Group: "root", Mode: 0o600},
-		{Path: "/etc/headscale/tls", User: "root", Group: "headscale", Mode: 0o750},
-		{Path: "/etc/headscale/tls/vpn.example.com.crt", User: "root", Group: "headscale", Mode: 0o644},
-		{Path: "/etc/headscale/tls/vpn.example.com.key", User: "root", Group: "headscale", Mode: 0o640},
-	} {
-		stats[st.Path] = st
-	}
-	return stats
-}
-
-// SetStat replaces one path's owner and mode in the demo's filesystem, so a
-// test can stage the ownership it wants to drive a flow from.
-func (f *Fake) SetStat(st FileStat) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.stats[st.Path] = st
-	f.reloadControlPlane()
-}
-
-// Stat answers the way `stat` would for the demo's filesystem.
-func (f *Fake) Stat(_ context.Context, paths []string) map[string]FileStat {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.statPaths(paths)
-}
-
-// statPaths answers the way `stat` would for the demo's filesystem.
-func (f *Fake) statPaths(paths []string) map[string]FileStat {
-	out := map[string]FileStat{}
-	for _, p := range paths {
-		if st, ok := f.stats[p]; ok {
-			out[p] = st
-		}
-	}
-	return out
-}
-
-// chown applies a previewed chown to the demo's filesystem.
-func (f *Fake) chown(argv []string) (string, error) {
-	recursive := len(argv) == 4 && argv[1] == "-R"
-	owner, target := argv[len(argv)-2], argv[len(argv)-1]
-	user, group, ok := strings.Cut(owner, ":")
-	if !ok {
-		return "", fmt.Errorf("chown: invalid owner %q", owner)
-	}
-	for p, st := range f.stats {
-		if p == target || (recursive && strings.HasPrefix(p, target+"/")) {
-			st.User, st.Group = user, group
-			f.stats[p] = st
-		}
-	}
-	f.reloadControlPlane()
-	return "", nil
-}
-
-// reloadControlPlane re-reads the demo's configuration into the state, the way
-// a reload on a real host would.
-func (f *Fake) reloadControlPlane() {
-	cp, err := ParseHeadscaleConfig([]byte(f.config))
-	if err != nil {
-		f.state.Headscale.ControlPlane = ControlPlane{
-			ConfigPath: HeadscaleConfigPath, Error: err.Error()}
-		return
-	}
-	cp.ServiceState = f.serviceState
-	cp.ServiceEnabled = f.serviceEnabled
-	// The demo's unit runs headscale as its own user, which is the case the
-	// secret write has to get right: an `install` without -o would leave the
-	// service unable to read its own secret.
-	cp.ServiceUser, cp.ServiceGroup = "headscale", "headscale"
-	cp.Ownership = CheckOwnership(cp, f.statPaths(OwnershipPaths(cp)))
-	f.state.Headscale.ControlPlane = cp
-}
-
-// SetService sets the demo unit's is-active and is-enabled answers, so a test
-// can put the fake in the state it wants to drive a flow from (a fresh
-// install is "inactive" and "disabled").
-func (f *Fake) SetService(active, enabled string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.serviceState, f.serviceEnabled = active, enabled
-	f.reloadControlPlane()
-}
-
-// SetConfig replaces the demo's config.yaml, so a test can drive a flow from
-// another starting point: the file the package ships, or one set up for
-// another transport.
-func (f *Fake) SetConfig(config string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.config = config
-	f.reloadControlPlane()
 }
 
 // Name identifies the backend.
@@ -250,7 +67,7 @@ func (f *Fake) Name() string { return "demo" }
 
 // Describe is the one-line summary shown in the header.
 func (f *Fake) Describe() string {
-	return "wireguard + headscale  ·  demo (no changes are applied)"
+	return "wireguard  ·  demo (no changes are applied)"
 }
 
 // Preview renders the command the way the real backend would.
@@ -264,9 +81,8 @@ func (f *Fake) Run(ctx context.Context, cmd runner.Command) (string, error) {
 // Commands returns every command the fake was asked to run, for the tests.
 func (f *Fake) Commands() []runner.Command { return f.run.Ran }
 
-// Load returns a copy of the sample state. With the demo unit stopped it
-// answers the way the real backend does: the configuration and the unit's
-// state, and no lists, because the CLI would have nothing to talk to.
+// Load returns a copy of the sample state, with the firewall parsed the way
+// the real backend parses `iptables -S`.
 func (f *Fake) Load(_ context.Context) (State, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -274,10 +90,6 @@ func (f *Fake) Load(_ context.Context) (State, error) {
 	state.Devices = append([]Device(nil), f.state.Devices...)
 	state.Firewall = ParseIptablesRules(strings.Join(f.firewall, "\n"))
 	state.annotateFirewall()
-	if msg := NotRunningMessage(state.Headscale.ControlPlane); msg != "" {
-		state.Headscale.Error, state.Headscale.NotRunning = msg, true
-		state.Headscale.Users, state.Headscale.Nodes, state.Headscale.PreAuthKeys = nil, nil, nil
-	}
 	return state, nil
 }
 
@@ -310,44 +122,6 @@ func (f *Fake) apply(cmd runner.Command) (string, error) {
 		return "", nil
 	case len(argv) == 5 && argv[0] == "install" && strings.HasPrefix(argv[4], "/etc/wireguard/") && strings.HasSuffix(argv[4], ".conf"):
 		return f.writeConf(argv[4], cmd.Stdin)
-	case len(argv) == 5 && argv[0] == "headscale" && argv[1] == "nodes" && argv[2] == "expire":
-		return f.expireNode(argv[4])
-	case len(argv) == 6 && argv[0] == "headscale" && argv[1] == "nodes" && argv[2] == "delete" && argv[5] == "--force":
-		return f.deleteNode(argv[4])
-	case len(argv) == 6 && argv[0] == "headscale" && argv[1] == "nodes" && argv[2] == "rename":
-		return f.renameNode(argv[4], argv[5])
-	case len(argv) >= 6 && argv[0] == "headscale" && argv[1] == "nodes" && argv[2] == "approve-routes":
-		return f.approveRoutes(argv[4], argv[5:])
-	case len(argv) >= 7 && argv[0] == "headscale" && argv[1] == "preauthkeys" && argv[2] == "create":
-		return f.createPreAuthKey(argv)
-	case len(argv) == 4 && argv[0] == "headscale" && argv[1] == "users" && argv[2] == "create":
-		return f.createUser(argv[3])
-	case len(argv) == 3 && argv[0] == "sh" && argv[1] == "-c" &&
-		strings.Contains(argv[2], HeadscaleConfigPath):
-		return f.writeHeadscaleConfig(cmd.Stdin)
-	case len(argv) > 1 && argv[0] == "install" && argv[len(argv)-1] == OIDCClientSecretPath:
-		// The demo records that a secret exists and drops the value, which is
-		// exactly what the real flow does: nothing but the file ever holds it.
-		f.state.Headscale.ControlPlane.OIDC.ClientSecretSet = true
-		return "", nil
-	case len(argv) >= 4 && argv[0] == "systemctl" && argv[1] == "show":
-		return "User=headscale\nGroup=headscale", nil
-	case len(argv) == 3 && argv[0] == "systemctl" && argv[1] == "restart":
-		f.serviceState = "active"
-		f.state.Headscale.ControlPlane.ServiceState = f.serviceState
-		return "", nil
-	case len(argv) >= 3 && argv[0] == "systemctl" && argv[1] == "enable":
-		f.serviceEnabled = "enabled"
-		if hasToken(argv, "--now") {
-			f.serviceState = "active"
-		}
-		f.state.Headscale.ControlPlane.ServiceState = f.serviceState
-		f.state.Headscale.ControlPlane.ServiceEnabled = f.serviceEnabled
-		return "Created symlink /etc/systemd/system/multi-user.target.wants/headscale.service.", nil
-	case (len(argv) == 3 || len(argv) == 4) && argv[0] == "chown":
-		return f.chown(argv)
-	case len(argv) >= 2 && argv[0] == "curl":
-		return demoDiscoveryDocument, nil
 	case len(argv) >= 3 && argv[0] == "iptables":
 		return "", f.iptables(argv[1:])
 	default:
@@ -531,165 +305,6 @@ func (f *Fake) writeConf(path, conf string) (string, error) {
 	return "", nil
 }
 
-// demoDiscoveryDocument is what the demo's IdP answers to a discovery read.
-const demoDiscoveryDocument = `{"issuer":"https://idp.example.com/realms/demo",` +
-	`"authorization_endpoint":"https://idp.example.com/realms/demo/protocol/openid-connect/auth"}`
-
-// writeHeadscaleConfig applies the configuration write: the demo keeps the new
-// text and re-reads it, so the panel and the next diff both reflect it.
-func (f *Fake) writeHeadscaleConfig(content string) (string, error) {
-	if strings.TrimSpace(content) == "" {
-		return "", fmt.Errorf("refusing to write an empty configuration")
-	}
-	secretSet := f.state.Headscale.ControlPlane.OIDC.ClientSecretSet
-	// `cp -p` takes the backup with config.yaml's own owner and mode.
-	if cfg, ok := f.stats[HeadscaleConfigPath]; ok {
-		cfg.Path = HeadscaleConfigBackupPath
-		f.stats[cfg.Path] = cfg
-	}
-	f.config = content
-	f.reloadControlPlane()
-	f.state.Headscale.ControlPlane.OIDC.ClientSecretSet =
-		secretSet || f.state.Headscale.ControlPlane.OIDC.ClientSecretSet
-	return "", nil
-}
-
-func (f *Fake) deleteNode(id string) (string, error) {
-	nodes := f.state.Headscale.Nodes
-	for i := range nodes {
-		if nodes[i].ID == id {
-			f.state.Headscale.Nodes = append(nodes[:i], nodes[i+1:]...)
-			return "Node destroyed", nil
-		}
-	}
-	return "", fmt.Errorf("no such node: %s", id)
-}
-
-// approveRoutes applies `headscale nodes approve-routes`: the list replaces
-// the node's approvals, and what is served is what is both advertised and
-// approved.
-func (f *Fake) approveRoutes(id string, args []string) (string, error) {
-	var routes []string
-	switch {
-	case len(args) == 1 && args[0] == "--routes=":
-	case len(args) == 2 && args[0] == "--routes":
-		routes = strings.Split(args[1], ",")
-	default:
-		return "", fmt.Errorf("approve-routes: unexpected arguments %q", args)
-	}
-	for i := range f.state.Headscale.Nodes {
-		n := &f.state.Headscale.Nodes[i]
-		if n.ID != id {
-			continue
-		}
-		n.ApprovedRoutes = routes
-		n.SubnetRoutes = nil
-		for _, r := range NodeRoutes(*n) {
-			if r.Advertised && r.Approved {
-				n.SubnetRoutes = append(n.SubnetRoutes, r.Route)
-			}
-		}
-		return "Node updated", nil
-	}
-	return "", fmt.Errorf("no such node: %s", id)
-}
-
-func (f *Fake) renameNode(id, name string) (string, error) {
-	for i := range f.state.Headscale.Nodes {
-		if f.state.Headscale.Nodes[i].ID == id {
-			f.state.Headscale.Nodes[i].GivenName = name
-			return "Node renamed", nil
-		}
-	}
-	return "", fmt.Errorf("no such node: %s", id)
-}
-
-// createPreAuthKey applies `headscale preauthkeys create`, growing the key
-// list and answering with the full one-time key the way headscale prints it.
-// Like upstream, the full key appears only in this answer: the state keeps the
-// prefix alone.
-func (f *Fake) createPreAuthKey(argv []string) (string, error) {
-	userID, expiration := "", "24h"
-	reusable, ephemeral := false, false
-	for i := 3; i < len(argv); i++ {
-		switch argv[i] {
-		case "--user":
-			i++
-			if i < len(argv) {
-				userID = argv[i]
-			}
-		case "--reusable":
-			reusable = true
-		case "--ephemeral":
-			ephemeral = true
-		case "--expiration":
-			i++
-			if i < len(argv) {
-				expiration = argv[i]
-			}
-		}
-	}
-	userName := ""
-	for _, u := range f.state.Headscale.Users {
-		if u.ID == userID {
-			userName = u.Name
-		}
-	}
-	if userName == "" {
-		return "", fmt.Errorf("no such user: %s", userID)
-	}
-	d, err := parseSimpleDuration(expiration)
-	if err != nil {
-		return "", err
-	}
-	next := fmt.Sprintf("%d", len(f.state.Headscale.PreAuthKeys)+1)
-	f.state.Headscale.PreAuthKeys = append(f.state.Headscale.PreAuthKeys, PreAuthKey{
-		ID: next, User: userName, KeyPrefix: demoNewPreAuthKey[:10],
-		Reusable: reusable, Ephemeral: ephemeral,
-		Expiration: time.Now().Add(d), CreatedAt: time.Now(),
-	})
-	return demoNewPreAuthKey, nil
-}
-
-// parseSimpleDuration reads the integer-plus-unit durations ValidExpiration
-// accepts, including the d/w/y units time.ParseDuration does not know.
-func parseSimpleDuration(s string) (time.Duration, error) {
-	if !ValidExpiration(s) {
-		return 0, fmt.Errorf("not a valid expiration: %q", s)
-	}
-	n := 0
-	_, _ = fmt.Sscanf(s[:len(s)-1], "%d", &n) // best-effort: 0 on mismatch is fine for the fake
-	unit := map[byte]time.Duration{
-		's': time.Second, 'm': time.Minute, 'h': time.Hour,
-		'd': 24 * time.Hour, 'w': 7 * 24 * time.Hour, 'y': 365 * 24 * time.Hour,
-	}[s[len(s)-1]]
-	return time.Duration(n) * unit, nil
-}
-
-func (f *Fake) expireNode(id string) (string, error) {
-	for i := range f.state.Headscale.Nodes {
-		if f.state.Headscale.Nodes[i].ID == id {
-			f.state.Headscale.Nodes[i].Expiry = time.Now().Add(-time.Minute)
-			f.state.Headscale.Nodes[i].Online = false
-			return "Node expired", nil
-		}
-	}
-	return "", fmt.Errorf("no such node: %s", id)
-}
-
-func (f *Fake) createUser(name string) (string, error) {
-	for _, u := range f.state.Headscale.Users {
-		if u.Name == name {
-			return "", fmt.Errorf("user %q already exists", name)
-		}
-	}
-	next := fmt.Sprintf("%d", len(f.state.Headscale.Users)+1)
-	f.state.Headscale.Users = append(f.state.Headscale.Users, User{
-		ID: next, Name: name, CreatedAt: time.Now(),
-	})
-	return "User created", nil
-}
-
 // demoState is the sample network. Times are relative to now, so the view reads
 // sensibly however long after this was written it runs.
 func demoState() State {
@@ -732,53 +347,5 @@ func demoState() State {
 				},
 			},
 		}},
-		Headscale: Headscale{
-			Present:      true,
-			OIDCInferred: true,
-			Users: []User{
-				{ID: "1", Name: "ana", DisplayName: "Ana Ba", Email: "ana@example.com",
-					Provider: "oidc", ProviderID: "https://idp.example.com/ana",
-					CreatedAt: now.Add(-30 * 24 * time.Hour)},
-				{ID: "2", Name: "bo", DisplayName: "Bo Cee", Email: "bo@example.com",
-					Provider: "oidc", ProviderID: "https://idp.example.com/bo",
-					CreatedAt: now.Add(-12 * 24 * time.Hour)},
-			},
-			Nodes: []Node{
-				{ID: "1", Name: "ana-laptop", GivenName: "ana-laptop", User: "ana",
-					IPAddresses: []string{"192.0.2.2", "2001:db8::2"},
-					LastSeen:    now.Add(-42 * time.Second), Online: true,
-					RegisterMethod: "REGISTER_METHOD_OIDC",
-					Expiry:         now.Add(150 * 24 * time.Hour)},
-				{ID: "2", Name: "bo-phone", GivenName: "bo-phone", User: "bo",
-					IPAddresses: []string{"192.0.2.3"},
-					LastSeen:    now.Add(-6 * time.Hour), Online: false,
-					RegisterMethod: "REGISTER_METHOD_OIDC",
-					Expiry:         now.Add(150 * 24 * time.Hour)},
-				{ID: "3", Name: "ci-runner", GivenName: "ci-runner", User: "ana",
-					IPAddresses: []string{"192.0.2.4"},
-					LastSeen:    now.Add(-3 * 24 * time.Hour), Online: false,
-					RegisterMethod: "REGISTER_METHOD_AUTH_KEY",
-					// Already expired: the row the operator is meant to notice.
-					Expiry: now.Add(-2 * 24 * time.Hour)},
-				// A subnet router in the office: one route approved, one
-				// still pending, and an exit node nobody approved yet.
-				{ID: "4", Name: "office-gw", GivenName: "office-gw", User: "ana",
-					IPAddresses: []string{"192.0.2.5"},
-					LastSeen:    now.Add(-20 * time.Second), Online: true,
-					RegisterMethod: "REGISTER_METHOD_AUTH_KEY",
-					Expiry:         time.Time{},
-					AvailableRoutes: []string{"198.51.100.0/24", "203.0.113.0/24",
-						"0.0.0.0/0", "::/0"},
-					ApprovedRoutes: []string{"198.51.100.0/24"},
-					SubnetRoutes:   []string{"198.51.100.0/24"}},
-			},
-			PreAuthKeys: []PreAuthKey{
-				{ID: "1", User: "ana", KeyPrefix: "0123456789", Reusable: true,
-					Ephemeral: false, Used: false,
-					Expiration: now.Add(24 * time.Hour),
-					CreatedAt:  now.Add(-2 * time.Hour),
-					ACLTags:    []string{"tag:ci"}},
-			},
-		},
 	}
 }

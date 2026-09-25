@@ -47,16 +47,6 @@ func TestFixturesCarryNoRealAddress(t *testing.T) {
 						addrs = append(addrs, prefixAddrs(p.AllowedIPs)...)
 					}
 				}
-			case strings.HasPrefix(name, "headscale-nodes"):
-				nodes, err := ParseNodes(data)
-				if err != nil {
-					t.Fatalf("parse: %v", err)
-				}
-				for _, n := range nodes {
-					addrs = append(addrs, prefixAddrs(n.IPAddresses)...)
-					addrs = append(addrs, prefixAddrs(n.AvailableRoutes)...)
-					addrs = append(addrs, prefixAddrs(n.ApprovedRoutes)...)
-				}
 			case strings.HasPrefix(name, "ip-route"):
 				routes, err := ParseRoutes(data)
 				if err != nil {
@@ -68,8 +58,7 @@ func TestFixturesCarryNoRealAddress(t *testing.T) {
 			case strings.HasPrefix(name, "iptables"):
 				addrs = append(addrs, ruleAddrs(ParseIptablesRules(string(data)))...)
 			default:
-				// Users and pre-auth keys carry no addresses.
-				return
+				t.Fatalf("no address check for fixture %s: add a case", name)
 			}
 			for _, addr := range addrs {
 				assertDocumentationAddress(t, addr)
@@ -89,14 +78,6 @@ func TestDemoDataCarriesNoRealAddress(t *testing.T) {
 			for _, a := range prefixAddrs(p.AllowedIPs) {
 				assertDocumentationAddress(t, a)
 			}
-		}
-	}
-	for _, n := range state.Headscale.Nodes {
-		for _, a := range prefixAddrs(n.IPAddresses) {
-			assertDocumentationAddress(t, a)
-		}
-		for _, a := range prefixAddrs(append(n.AvailableRoutes, n.ApprovedRoutes...)) {
-			assertDocumentationAddress(t, a)
 		}
 	}
 	for _, r := range state.Routes {

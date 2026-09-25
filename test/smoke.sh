@@ -1,10 +1,10 @@
 #!/bin/bash
-# Backend smoke test for tui-vpn, run inside a lab guest.
+# Backend smoke test for tui-wireguard, run inside a lab guest.
 #
 # The contract (see tui-tools/tui-lab): this script runs on the guest as the
 # unprivileged lab user, escalates with `sudo -n` only, prints a short PASS/FAIL
 # table and exits non-zero if anything failed. The binary under test is at
-# $TUI_LAB_BIN (default: tui-vpn on PATH).
+# $TUI_LAB_BIN (default: tui-wireguard on PATH).
 #
 # What a smoke test proves is that the tool reads the machine's *real* subject
 # and agrees with the machine's own tooling — not that a fake renders. The
@@ -13,7 +13,7 @@
 # record_compat that appends the probed version to compat/results.jsonl.
 set -uo pipefail
 
-bin="${TUI_LAB_BIN:-tui-vpn}"
+bin="${TUI_LAB_BIN:-tui-wireguard}"
 pass=0
 fail=0
 
@@ -33,7 +33,7 @@ check() {
   fi
 }
 
-echo "--- tui-vpn smoke on $(. /etc/os-release && echo "$PRETTY_NAME")"
+echo "--- tui-wireguard smoke on $(. /etc/os-release && echo "$PRETTY_NAME")"
 echo "      user=$(id -un)"
 
 # --- the report block ------------------------------------------------------
@@ -56,9 +56,9 @@ check "report carries the wireguard-tools fact" \
   "$bin --report" \
   '^wireguard-tools: '
 
-check "report carries the headscale fact" \
+check "report carries the interface count" \
   "$bin --report" \
-  '^headscale: '
+  '^wg interfaces: '
 
 check "report works in demo mode too" \
   "$bin --demo --report" \
@@ -85,117 +85,12 @@ check "check --demo is valid JSON naming the demo backend" \
   "$bin --demo --check" \
   '"backend": "demo"'
 
-check "check --demo reports the control plane as OIDC-configured" \
-  "$bin --demo --check" \
-  '"oidcConfigured": true'
+check "check --demo has no control-plane block (Headscale moved to tui-tailscale)" \
+  "$bin --demo --check | grep -cE '\"(headscale|controlPlane)\"' || true" \
+  '^0$'
 
 check "check --demo leaks no demo endpoint address" \
   "$bin --demo --check | grep -cE '198\.51\.100\.|192\.0\.2\.' || true" \
-  '^0$'
-
-# --- the control-plane block -----------------------------------------------
-#
-# The configuration read is what turned `oidc: yes/no` from a guess into a
-# fact, so the block that carries it is smoked here. Under --demo it is the
-# sample configuration; on a real router it is /etc/headscale/config.yaml.
-check "check --demo carries the control-plane block" \
-  "$bin --demo --check" \
-  '"controlPlane"'
-
-# The server_url is answered as two booleans rather than printed: those are the
-# two ways an otherwise healthy setup fails, and neither names this host.
-check "check --demo answers the server_url questions" \
-  "$bin --demo --check" \
-  '"serverUrlHttps": true'
-
-check "check --demo says whether the server_url is loopback" \
-  "$bin --demo --check" \
-  '"serverUrlLoopback": false'
-
-check "check --demo reduces the OIDC issuer to its host" \
-  "$bin --demo --check" \
-  '"oidcIssuer": "idp\.example\.com"'
-
-# The whole promise, on the real read path this time: --check goes into public
-# issues, so a URL anywhere in it is a bug.
-check "check carries no URL of this host" \
-  "$bin --check | grep -c '://' || true" \
-  '^0$'
-
-check "check --demo carries no URL either" \
-  "$bin --demo --check | grep -c '://' || true" \
-  '^0$'
-
-# Whether the unit starts at boot is the half of "is it running" a fresh
-# install gets wrong: the package leaves it disabled.
-check "check --demo says whether the unit starts at boot" \
-  "$bin --demo --check" \
-  '"serviceEnabled": "disabled"'
-
-# On a machine with headscale installed, the same fact comes from the real
-# unit, and has to agree with systemd's own answer.
-if command -v headscale >/dev/null 2>&1; then
-  enabled=$(systemctl is-enabled headscale 2>/dev/null | head -1)
-  check "check agrees with systemctl about the unit starting at boot" \
-    "sudo -n $bin --check" \
-    "\"serviceEnabled\": \"${enabled:-unknown}\""
-fi
-
-# The ownership check: the demo's noise key is root's, the way a root-run
-# `headscale configtest` leaves it, and --check names the path.
-check "check --demo names a state file the service account does not own" \
-  "$bin --demo --check" \
-  '"path": "/var/lib/headscale/noise_private.key"'
-
-# On a machine with headscale, the check has to have run (stat reached the
-# state directory through sudo -n) and agree with stat about the directory.
-if command -v headscale >/dev/null 2>&1; then
-  check "check ran the ownership check on the real state directory" \
-    "sudo -n $bin --check" \
-    '"ownershipChecked": true'
-
-  owner=$(sudo -n stat -c %U:%G /var/lib/headscale 2>/dev/null)
-  account=$(systemctl show headscale -p User --value 2>/dev/null)
-  if [[ -n $owner && -n $account && ${owner%%:*} != "$account" ]]; then
-    check "check reports the state directory owned by the wrong account" \
-      "sudo -n $bin --check" \
-      '"path": "/var/lib/headscale"'
-  elif [[ -n $owner ]]; then
-    check "check does not flag a state directory the service owns" \
-      "sudo -n $bin --check | grep -c '\"path\": \"/var/lib/headscale\"' || true" \
-      '^0$'
-  fi
-fi
-
-# The transport, read from the TLS settings and the bind: the demo sits behind
-# a reverse proxy, with a MagicDNS domain outside its server_url host.
-check "check --demo names the transport" \
-  "$bin --demo --check" \
-  '"transport": "reverse-proxy"'
-
-check "check --demo reports the base domain without a conflict" \
-  "$bin --demo --check" \
-  '"baseDomainConflict": false'
-
-if command -v headscale >/dev/null 2>&1; then
-  check "check reads a transport from the real configuration" \
-    "sudo -n $bin --check" \
-    '"transport": "(plain-http|letsencrypt|own-cert|reverse-proxy)"'
-fi
-
-check "check --demo keeps the inference as a separate field" \
-  "$bin --demo --check" \
-  '"oidcInferred":'
-
-# The whole point of writing the secret to its own file: --check can say that
-# one is set and has no field that could carry the value. A JSON key whose name
-# is client-secret-ish and whose value is a string would be a bug.
-check "check --demo reports the secret as set, never its value" \
-  "$bin --demo --check" \
-  '"oidcClientSecretSet": true'
-
-check "check --demo has no field that could hold a secret" \
-  "$bin --demo --check | grep -icE '\"(oidc)?[a-z]*clientsecret\": \"' || true" \
   '^0$'
 
 # --- the host firewall -----------------------------------------------------
@@ -219,21 +114,42 @@ if command -v iptables >/dev/null 2>&1 && sudo -n iptables -S >/dev/null 2>&1; t
     '"firewallChecked": true'
 fi
 
+# The whole promise, on the real read path: --check goes into public issues,
+# so a URL anywhere in it is a bug.
+check "check carries no URL of this host" \
+  "$bin --check | grep -c '://' || true" \
+  '^0$'
+
 check "check without privilege reports the firewall as unread, not open" \
   "$bin --sudo '' --check | grep -c '\"listenPortInput\": \"accept\"' || true" \
   '^0$'
 
-# --- node routes -----------------------------------------------------------
+# --- the real subject ------------------------------------------------------
 #
-# A subnet router's routes stay pending until approved; --check counts them per
-# node and never prints the networks.
-check "check --demo counts the demo router's pending exit node" \
-  "$bin --demo --check" \
-  '"exitNode": "pending"'
+# The interfaces --check counts have to be the ones wg itself lists, each
+# with the peer count and listen port wg reports. Asserted only where wg can
+# be read, which needs sudo -n.
+if command -v wg >/dev/null 2>&1 && sudo -n wg show interfaces >/dev/null 2>&1; then
+  ifaces=$(sudo -n wg show interfaces | wc -w)
+  check "check counts the interfaces wg lists ($ifaces)" \
+    "sudo -n $bin --check | grep -c '\"hasPrivateKey\"' || true" \
+    "^${ifaces}\$"
+  for iface in $(sudo -n wg show interfaces); do
+    port=$(sudo -n wg show "$iface" listen-port)
+    peers=$(sudo -n wg show "$iface" peers | grep -c . || true)
+    check "check agrees with wg about $iface (port $port, $peers peers)" \
+      "sudo -n $bin --check | tr -d ' \n' | grep -oE '\"name\":\"$iface\"[^}]*\"listenPort\":$port,[^}]*\"peerCount\":$peers' || true" \
+      "$iface"
+  done
+fi
 
-check "check --demo prints no route" \
-  "$bin --demo --check | grep -cE '0\.0\.0\.0/0|203\.0\.113\.' || true" \
-  '^0$'
+# The configuration of the old name is still read after an upgrade from
+# tui-vpn, and the tool says so. Only checked when the lab left one behind.
+if [[ -r /etc/tui-vpn/config.toml ]]; then
+  check "report names the legacy tui-vpn config it read" \
+    "$bin --report" \
+    'old tui-vpn config /etc/tui-vpn/config.toml'
+fi
 
 # --- compatibility evidence ------------------------------------------------
 #
@@ -241,9 +157,9 @@ check "check --demo prints no route" \
 # one line per backend whose version the tool itself probed, printed behind
 # `compat-result:` so it survives the trip out of the guest in the lab's log,
 # and appended to $TUI_COMPAT_RESULTS as well for a run outside the lab.
-# tui-vpn drives two backends, so --check's compat block is a list: each
-# entry names a backend and, when the probe could read one, its version.
-TOOL=tui-vpn
+# --check's compat block is a list: each entry names a backend and, when the
+# probe could read one, its version.
+TOOL=tui-wireguard
 record_compat() {
   local report="$1" outcome="$2" distro today backend version line
   distro=$(. /etc/os-release && echo "${ID}-${VERSION_ID:-rolling}")
@@ -271,5 +187,5 @@ outcome=pass
 [[ $fail -eq 0 ]] || outcome=fail
 record_compat "$(sudo -n "$bin" --check 2>/dev/null)" "$outcome"
 
-echo "--- tui-vpn: $pass passed, $fail failed"
+echo "--- tui-wireguard: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

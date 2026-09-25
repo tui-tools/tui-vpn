@@ -1,8 +1,8 @@
-# tui-vpn — build, test and lint.
+# tui-wireguard — build, test and lint.
 
 GO      ?= go
 BIN     ?= bin
-TOOL    := tui-vpn
+TOOL    := tui-wireguard
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 # The screenshot renderer is shared by the whole family and ships with the
@@ -62,11 +62,13 @@ tidy:
 	$(GO) mod tidy
 
 ## screenshots: re-render the README frames from --demo (needs chrome/chromium).
+## The "new" frame types the whole create-interface wizard up to its conf
+## preview, which takes longer than the renderer's default budget.
 screenshots: build
-	python3 $(KIT)/tools/render-screenshots.py \
+	python3 $(KIT)/tools/render-screenshots.py --budget 12 \
 		--bin $(BIN)/$(TOOL) --name $(TOOL) --out docs/screenshots \
-		--screen status= --screen peers=2 --screen users=3 \
-		--screen headscale=4G --screen help=?
+		--screen status= --screen peers=2 --screen new="Nwg1\r10.8.0.1/24\r\rforw\r\r\ry" \
+		--screen help=?
 
 ## readme: regenerate the generated README sections from tool.json.
 readme:

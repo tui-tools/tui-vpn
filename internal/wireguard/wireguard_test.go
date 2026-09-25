@@ -77,7 +77,7 @@ func TestBuildAddPeerRejectsBadInput(t *testing.T) {
 // value on the command line, so it can never appear in the confirm dialog or in
 // ps. The path is the last argument, after the "preshared-key" token.
 func TestPresharedKeyIsAFilePathNotAValue(t *testing.T) {
-	add, err := BuildAddPeer("wg0", testPub, []string{"192.0.2.5/32"}, "/run/tui-vpn/psk")
+	add, err := BuildAddPeer("wg0", testPub, []string{"192.0.2.5/32"}, "/run/tui-wireguard/psk")
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestPresharedKeyIsAFilePathNotAValue(t *testing.T) {
 	if i < 0 || i+1 >= len(add.Argv) {
 		t.Fatalf("no preshared-key argument: %q", add.Argv)
 	}
-	if add.Argv[i+1] != "/run/tui-vpn/psk" {
+	if add.Argv[i+1] != "/run/tui-wireguard/psk" {
 		t.Errorf("preshared-key argument = %q, want the file path", add.Argv[i+1])
 	}
 }
@@ -106,8 +106,6 @@ func TestNoBuilderEmitsAPrivateKey(t *testing.T) {
 			c, e := BuildAddPeer("wg0", testPub, []string{"192.0.2.5/32"}, "/run/psk")
 			return c.Argv, e
 		}},
-		{"expire", func() ([]string, error) { c, e := BuildExpireNode("3"); return c.Argv, e }},
-		{"user", func() ([]string, error) { c, e := BuildCreateUser("dana"); return c.Argv, e }},
 	}
 	for _, tc := range cmds {
 		argv, err := tc.make()
