@@ -203,3 +203,25 @@ func TestCreateInterfaceOnEmptyHost(t *testing.T) {
 		t.Fatalf("N on an empty host did not open the wizard (mode %d): %s", a.mode, a.status)
 	}
 }
+
+// Taking an interface down must leave it on screen, so that u can bring it
+// back: the regression the lab found, where the real backend dropped a down
+// interface from the list and left nothing to select.
+func TestDownInterfaceCanBeBroughtBackUp(t *testing.T) {
+	a := newTestApp(t)
+	reload := func(a *app) *app {
+		model, _ := a.Update(a.load()())
+		return model.(*app)
+	}
+	model, _ := a.Update(key("d"))
+	a = reload(confirmAndRun(t, model.(*app)))
+	dev, ok := a.selectedDevice()
+	if !ok || dev.Up || !dev.ConfigOnly {
+		t.Fatalf("after d the interface should still be listed, down: %+v %v", dev, ok)
+	}
+	model, _ = a.Update(key("u"))
+	a = reload(confirmAndRun(t, model.(*app)))
+	if dev, _ := a.selectedDevice(); !dev.Up || dev.ConfigOnly {
+		t.Errorf("u did not bring it back up: %+v", dev)
+	}
+}

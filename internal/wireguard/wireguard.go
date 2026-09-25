@@ -69,8 +69,14 @@ type Device struct {
 	// FwMark is the firewall mark, "off" when unset.
 	FwMark string `json:"fwMark,omitempty"`
 	// Up reports whether the link is up, as `ip link` sees it.
-	Up    bool   `json:"up"`
-	Peers []Peer `json:"peers"`
+	Up bool `json:"up"`
+	// ConfigOnly reports an interface that has a configuration file in
+	// /etc/wireguard but no link: created and never brought up, or taken
+	// down. `wg show` does not list it, and without this it would vanish
+	// from the screen the moment `d` took it down, leaving nothing to press
+	// `u` on.
+	ConfigOnly bool   `json:"configOnly,omitempty"`
+	Peers      []Peer `json:"peers"`
 	// Forwarding reports that the host's FORWARD chain accepts traffic
 	// coming in on this interface: it is a forwarding server (see
 	// ForwardingRules). Read from the live ruleset.
@@ -257,8 +263,42 @@ func BuildAddPeer(iface, publicKey string, allowedIPs []string, presharedKeyFile
 	}, nil
 }
 
+// ConfDir is where wg-quick looks for interface configurations.
+const ConfDir = "/etc/wireguard"
+
 // ConfPath is where wg-quick expects an interface's configuration file.
-func ConfPath(iface string) string { return "/etc/wireguard/" + iface + ".conf" }
+func ConfPath(iface string) string { return ConfDir + "/" + iface + ".conf" }
+
+// ParseConfNames reads a listing of ConfDir into the interface names that
+// have a configuration: every `<name>.conf` whose name is a valid interface
+// name. Keys, pre-shared keys and anything else in the directory are skipped.
+func ParseConfNames(listing string) []string {
+	var names []string
+	for _, line := range strings.Split(listing, "\n") {
+		name, ok := strings.CutSuffix(strings.TrimSpace(line), ".conf")
+		if ok && ValidInterface(name) {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// MergeConfigured appends a down, config-only device for each configured name
+// that is not already a live device, keeping the live ones first and in the
+// order `wg show` gave them.
+func MergeConfigured(devices []Device, names []string) []Device {
+	live := make(map[string]bool, len(devices))
+	for _, d := range devices {
+		live[d.Name] = true
+	}
+	for _, name := range names {
+		if !live[name] {
+			devices = append(devices, Device{Name: name, ConfigOnly: true})
+			live[name] = true
+		}
+	}
+	return devices
+}
 
 // KeyPath is where the tool keeps an interface's private key: a root-only file
 // next to the configuration, which `wg set … private-key` reads itself.

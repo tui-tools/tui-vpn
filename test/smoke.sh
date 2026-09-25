@@ -131,9 +131,18 @@ check "check without privilege reports the firewall as unread, not open" \
 # be read, which needs sudo -n.
 if command -v wg >/dev/null 2>&1 && sudo -n wg show interfaces >/dev/null 2>&1; then
   ifaces=$(sudo -n wg show interfaces | wc -w)
-  check "check counts the interfaces wg lists ($ifaces)" \
-    "sudo -n $bin --check | grep -c '\"hasPrivateKey\"' || true" \
+  check "check counts the interfaces wg lists as up ($ifaces)" \
+    "sudo -n $bin --check | grep -c '\"up\": true' || true" \
     "^${ifaces}\$"
+  # An interface with a conf in /etc/wireguard and no link is still listed,
+  # down, so it can be brought up again.
+  for conf in $(sudo -n ls /etc/wireguard 2>/dev/null | sed -n 's/\.conf$//p'); do
+    if ! sudo -n wg show "$conf" >/dev/null 2>&1; then
+      check "check lists the down interface $conf from its conf" \
+        "sudo -n $bin --check | tr -d ' \n' | grep -oE '\"name\":\"$conf\",\"up\":false[^}]*\"configOnly\":true' || true" \
+        "$conf"
+    fi
+  done
   for iface in $(sudo -n wg show interfaces); do
     port=$(sudo -n wg show "$iface" listen-port)
     peers=$(sudo -n wg show "$iface" peers | grep -c . || true)

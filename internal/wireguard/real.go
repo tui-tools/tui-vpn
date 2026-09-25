@@ -20,7 +20,10 @@ var searchPaths = map[string][]string{
 	// generated inside one root shell so the private key never leaves the exec
 	// site, and the conf file arrives on install's stdin so content never
 	// rides an argv.
-	"sh":      {"/bin/sh", "/usr/bin/sh"},
+	"sh": {"/bin/sh", "/usr/bin/sh"},
+	// ls lists the configuration files in /etc/wireguard, which is how an
+	// interface that is down is still on screen to be brought up.
+	"ls":      {"/usr/bin/ls", "/bin/ls"},
 	"install": {"/usr/bin/install", "/bin/install"},
 	// iptables reads the host firewall (is a listen port open, does the host
 	// forward for an interface) and opens a listen port when asked.
@@ -32,6 +35,8 @@ var searchPaths = map[string][]string{
 var privilegedRead = map[string]bool{
 	"wg": true,
 	"ip": false,
+	// /etc/wireguard is mode 700, root's.
+	"ls": true,
 	// Reading the ruleset needs root: unprivileged, iptables refuses with
 	// "you must be root".
 	"iptables": true,
@@ -155,9 +160,27 @@ func (r *Real) Load(ctx context.Context) (State, error) {
 			state.Devices = ParseWgDump(dump)
 		}
 		r.annotateLinks(ctx, &state)
+		r.addConfigured(ctx, &state)
 	}
 	r.loadHostNet(ctx, &state)
 	return state, nil
+}
+
+// addConfigured lists the interfaces that have a configuration file in
+// /etc/wireguard but are not up, so they can be brought up again. The
+// directory is root-only on every distribution that ships wireguard-tools, so
+// the listing escalates like wg's own read. A failure is silent: the live
+// interfaces are already on screen, and this only adds the down ones.
+func (r *Real) addConfigured(ctx context.Context, state *State) {
+	run, err := r.runnerFor("ls")
+	if err != nil {
+		return
+	}
+	out, err := run.Read(ctx, "ls", "-1", ConfDir)
+	if err != nil {
+		return
+	}
+	state.Devices = MergeConfigured(state.Devices, ParseConfNames(out))
 }
 
 // loadHostNet reads the routing table and the host firewall. Both are best

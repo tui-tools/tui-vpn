@@ -35,7 +35,7 @@ tui-wireguard --demo
 
 ![The interfaces screen: state, listen port, whether the host firewall opens the port and forwards for the interface, and peer counts](docs/screenshots/tui-wireguard-status.png)
 
-- **interfaces**: the WireGuard interfaces on this host, with peer counts and state, whether the host firewall lets a handshake reach the listen port, and whether the host forwards for the interface. `N` creates one from zero (an endpoint, or a forwarding server with its rules), `u` / `d` bring one up or down, `w` saves its runtime config.
+- **interfaces**: the WireGuard interfaces on this host, with peer counts and state, whether the host firewall lets a handshake reach the listen port, and whether the host forwards for the interface. `N` creates one from zero (an endpoint, or a forwarding server with its rules), `u` / `d` bring one up or down, `w` saves its runtime config. An interface that is down has no link and no line in `wg show`, so it is listed from its file in `/etc/wireguard` instead, and `u` brings it back.
 - **peers**: the peers of the interface selected on the first screen: endpoint, handshake age, transfer, allowed IPs, keepalive. `a` / `x` add or remove a peer (end the add line with `psk` to also generate a pre-shared key file); `w` saves.
 
 ![The peers screen: endpoints, handshake age, transfer and allowed IPs for the selected interface](docs/screenshots/tui-wireguard-peers.png)
@@ -255,7 +255,7 @@ hidden; one below the minimum is marked as such and the tool still runs.
 | Binary | `wg` |
 | Version read with | `wg --version` |
 | Minimum | 1.0.20200513 |
-| Tested | `1.0.20210914` |
+| Tested | `1.0.20210914`, `1.0.20250521`, `1.0.20260223` |
 
 The tested versions are generated from `compat/results.jsonl`, which the tool's
 own smoke test appends to when it runs against a real machine in

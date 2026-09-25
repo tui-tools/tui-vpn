@@ -224,6 +224,9 @@ func (f *Fake) setUp(iface string, up bool) (string, error) {
 				f.applyConfHooks(iface, up)
 			}
 			f.state.Devices[i].Up = up
+			// Like the real listing: a down interface is known from its
+			// configuration file alone.
+			f.state.Devices[i].ConfigOnly = !up
 			if up {
 				return "[#] interface " + iface + " up", nil
 			}
@@ -301,6 +304,7 @@ func (f *Fake) writeConf(path, conf string) (string, error) {
 		ListenPort:    port,
 		FwMark:        "off",
 		Up:            false,
+		ConfigOnly:    true,
 	})
 	return "", nil
 }

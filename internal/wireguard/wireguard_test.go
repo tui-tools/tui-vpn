@@ -140,3 +140,24 @@ func indexOf(s []string, v string) int {
 	}
 	return -1
 }
+
+// An interface that is down has no link and no line in `wg show`, only its
+// conf. The listing of /etc/wireguard brings it back on screen, and nothing
+// else in that directory is mistaken for an interface.
+func TestConfiguredInterfacesAreListed(t *testing.T) {
+	listing := "wg0.conf\nwg0.key\nwg1.conf\nwg0-AAAAAAAA.psk\n-x.conf\nnotes.txt\nbad name.conf\n"
+	names := ParseConfNames(listing)
+	if strings.Join(names, ",") != "wg0,wg1" {
+		t.Fatalf("names = %q, want wg0 and wg1", names)
+	}
+	devices := MergeConfigured([]Device{{Name: "wg0", Up: true}}, names)
+	if len(devices) != 2 {
+		t.Fatalf("devices = %+v, want the live wg0 and the configured wg1", devices)
+	}
+	if devices[0].ConfigOnly || !devices[0].Up {
+		t.Errorf("the live interface changed: %+v", devices[0])
+	}
+	if devices[1].Name != "wg1" || !devices[1].ConfigOnly || devices[1].Up {
+		t.Errorf("wg1 should be listed down and config-only: %+v", devices[1])
+	}
+}

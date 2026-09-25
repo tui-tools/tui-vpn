@@ -43,12 +43,15 @@ type wgSummary struct {
 
 // ifaceSummary is one interface without anything that identifies it on the wire.
 type ifaceSummary struct {
-	Name          string        `json:"name"`
-	Up            bool          `json:"up"`
-	ListenPort    int           `json:"listenPort"`
-	HasPrivateKey bool          `json:"hasPrivateKey"`
-	PeerCount     int           `json:"peerCount"`
-	Peers         []peerSummary `json:"peers"`
+	Name          string `json:"name"`
+	Up            bool   `json:"up"`
+	ListenPort    int    `json:"listenPort"`
+	HasPrivateKey bool   `json:"hasPrivateKey"`
+	// ConfigOnly is an interface known from its file in /etc/wireguard
+	// alone: it is down, so wg has nothing to say about its peers.
+	ConfigOnly bool          `json:"configOnly,omitempty"`
+	PeerCount  int           `json:"peerCount"`
+	Peers      []peerSummary `json:"peers"`
 	// ListenPortInput is what the host's INPUT chain does with a handshake
 	// to the listen port: accept, reject, drop, or unknown when the ruleset
 	// could not be read.
@@ -108,6 +111,7 @@ func summariseWG(state wireguard.State) wgSummary {
 			Up:              dev.Up,
 			ListenPort:      dev.ListenPort,
 			HasPrivateKey:   dev.HasPrivateKey,
+			ConfigOnly:      dev.ConfigOnly,
 			PeerCount:       len(dev.Peers),
 			ListenPortInput: verdict,
 			Forwarding:      dev.Forwarding,

@@ -126,8 +126,13 @@ func (a *app) emptyMessage() string {
 		}
 		return "no WireGuard interfaces are up"
 	case wireguard.ScreenPeers:
-		if _, ok := a.selectedDevice(); !ok {
+		dev, ok := a.selectedDevice()
+		if !ok {
 			return "select an interface first"
+		}
+		if dev.ConfigOnly {
+			return dev.Name + " is down: its peers are in " + wireguard.ConfPath(dev.Name) +
+				" · u on the interfaces screen brings it up"
 		}
 		return "this interface has no peers"
 	}
