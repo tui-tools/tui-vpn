@@ -36,7 +36,7 @@ tui-wireguard --demo
 ![The interfaces screen: state, listen port, whether the host firewall opens the port and forwards for the interface, and peer counts](docs/screenshots/tui-wireguard-status.png)
 
 - **interfaces**: the WireGuard interfaces on this host, with peer counts and state, whether the host firewall lets a handshake reach the listen port, and whether the host forwards for the interface. `N` creates one from zero (an endpoint, or a forwarding server with its rules), `u` / `d` bring one up or down, `w` saves its runtime config. An interface that is down has no link and no line in `wg show`, so it is listed from its file in `/etc/wireguard` instead, and `u` brings it back.
-- **peers**: the peers of the interface selected on the first screen: endpoint, handshake age, transfer, allowed IPs, keepalive. `a` / `x` add or remove a peer (end the add line with `psk` to also generate a pre-shared key file); `w` saves.
+- **peers**: the peers of the interface selected on the first screen: endpoint, handshake age, transfer, allowed IPs, keepalive. `a` / `x` add or remove a peer (end the add line with `psk` to also generate a pre-shared key file; an optional endpoint and persistent keepalive are asked next); `w` saves.
 
 ![The peers screen: endpoints, handshake age, transfer and allowed IPs for the selected interface](docs/screenshots/tui-wireguard-peers.png)
 
@@ -79,13 +79,26 @@ PostDown = iptables -t nat -D POSTROUTING -s 10.8.0.0/24 -o eth0 -d 10.0.0.0/16 
 
 The FORWARD rules are inserted (`-I`): the provider's Ubuntu image ends its FORWARD chain in `-j REJECT`, and a rule appended after it would never match. The return path is accepted by connection tracking only, so nothing behind the host can open a connection towards the peers. `ip_forward` is left on at down, because something else on the host may rely on it.
 
-**The listen port.** The same image ends its INPUT chain in `-j REJECT`, so the WireGuard port was closed even with the cloud's own security list open. When the host firewall does not already accept the port (or cannot be read), the wizard offers one more previewed step, `iptables -I INPUT -p udp --dport <port> -j ACCEPT`, and says plainly that it is not persisted: it is gone at the next reboot or firewall reload. When [tui-firewall](https://tui.tools/tools/tui-firewall/) is installed, the dialog says to open the port there to keep it; tui-firewall has no non-interactive mode, so tui-wireguard does not drive it. Otherwise it points at `netfilter-persistent save`.
+**The listen port.** The same image ends its INPUT chain in `-j REJECT`, so the WireGuard port was closed even with the cloud's own security list open. When the host firewall does not already accept the port (or cannot be read), the wizard offers one more previewed step, `iptables -I INPUT -p udp --dport <port> -j ACCEPT`, and says plainly that it is not persisted: it is gone at the next reboot or firewall reload. On a firewalld host the step is `firewall-cmd --add-port=<port>/udp` instead: firewalld rejects whatever its zones do not allow in its own nftables table, where an iptables rule is never consulted. When [tui-firewall](https://tui.tools/tools/tui-firewall/) is installed, the dialog says to open the port there to keep it; tui-firewall has no non-interactive mode, so tui-wireguard does not drive it. Otherwise it points at the way to keep it for the firewall in charge (`ufw allow`, `firewall-cmd --permanent`, `netfilter-persistent save`).
 
-The interfaces screen shows both answers for every interface, read from the live ruleset (`iptables -S`, which needs root): **UDP IN** is `open`, `closed` or `?` for the listen port, following jumps into ufw's and docker's chains and ignoring rules that only some senders match; **FORWARD** is whether the FORWARD chain accepts traffic in on the interface.
+The interfaces screen shows both answers for every interface, read from the live firewall (as root):
+
+- **UDP IN** is `open`, `closed` or `?` for the listen port. It is read from [tui-firewall](https://tui.tools/tools/tui-firewall/)'s `--check` when tui-firewall is installed (it knows ufw, firewalld, nftables and iptables), else from `nft -j list ruleset`, else from `iptables -S`. Jumps and gotos are followed into user chains (ufw's, docker's, firewalld's zones), rules that only some senders match are ignored, and a firewalld zone counts when it is the default zone or an interface is bound to it. Where the answer cannot be told (a jump into a chain that was not read, a firewalld service whose ports are not known), it is `?`, never `closed`.
+- **FORWARD** is whether the iptables FORWARD chain accepts traffic in on the interface: where a forwarding server's PostUp puts its rules.
 
 ### Persist peer changes (`w`)
 
 `wg set` mutations are runtime-only. After a successful peer add or remove, tui-wireguard offers `wg-quick save <if>`; `w` on the interfaces or peers screen offers it on demand. The dialog warns before you confirm: the save rewrites the conf from runtime state (hand-written comments are lost, and wg-quick inlines the private key into the root-only, mode 600 file, which is standard wg-quick behaviour).
+
+### Endpoint and keepalive on add-peer
+
+After the key line, `a` asks two optional questions. **Endpoint** is where to reach the peer, `host:port` or `[v6]:port` (a DNS name, an IPv4 address, or an IPv6 address in brackets); leave it empty on the side that is dialled, which learns the peer's address from its first handshake. **Persistent keepalive** is a number of seconds, 0-65535, empty or 0 for off; it is prefilled with 25 once an endpoint is given, the usual value for a host behind NAT that dials out. Both land on the one previewed command:
+
+```sh
+wg set wg0 peer <public-key> allowed-ips 10.66.0.1/32 endpoint vpn.example.com:51820 persistent-keepalive 25
+```
+
+`wg-quick save` persists them with the rest (`Endpoint =` and `PersistentKeepalive =` in the conf), and the peers screen shows them in its ENDPOINT and KEEP columns. A malformed endpoint or an out-of-range keepalive reopens its step with the value as typed and the reason.
 
 ### Optional pre-shared key on add-peer
 
@@ -105,7 +118,7 @@ Prints the versions and machine facts a bug report needs and exits: no UI, no pr
 tui-wireguard --check
 ```
 
-Reads the interfaces and the host firewall once and prints a summary as JSON: interface and peer counts, per-peer handshake ages, per-interface `listenPortInput` (what the host's INPUT chain does with a handshake: `accept`, `reject`, `drop`, or `unknown` when the ruleset could not be read, with `firewallChecked` saying which) and `forwarding`, and a `compat` block naming the wireguard-tools version.
+Reads the interfaces and the host firewall once and prints a summary as JSON: interface and peer counts, per-peer handshake ages, per-interface `listenPortInput` (what the host firewall does with a handshake: `accept`, `reject`, `drop`, or `unknown` when it could not be read or judged; `firewallChecked` says whether it was read, `firewallSource` what answered, `tui-firewall`, `nftables` or `iptables`, and `firewallManager` whether that is `firewalld` or `ufw`) and `forwarding`, and a `compat` block naming the wireguard-tools version.
 
 Like `--report`, it carries no key, no endpoint, no URL and no address of the host: it is meant to be pasted into scripts and issues. `test/smoke.sh` asserts that no `://` survives anywhere in the output, and that the interfaces, ports and peer counts agree with `wg show`.
 
@@ -222,7 +235,7 @@ Available once the first release lands in pkgs.tui.tools.
 ### Any distribution, static binary — coming soon
 
 ```sh
-curl -fsSL https://github.com/tui-tools/tui-wireguard/releases/download/v0.4.0/tui-wireguard_0.4.0_linux_amd64.tar.gz | tar -xz tui-wireguard
+curl -fsSL https://github.com/tui-tools/tui-wireguard/releases/download/v0.5.1/tui-wireguard_0.5.1_linux_amd64.tar.gz | tar -xz tui-wireguard
 sudo install -m0755 tui-wireguard /usr/local/bin/tui-wireguard
 ```
 
