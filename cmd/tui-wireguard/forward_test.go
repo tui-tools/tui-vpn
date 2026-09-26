@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -191,5 +193,63 @@ func TestCheckReportsTheListenPortAndForwarding(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "198.51.100.") {
 		t.Error("--check printed a network of the host")
+	}
+	if wg.FirewallSource != wireguard.SourceIptables {
+		t.Errorf("firewallSource = %q, want the demo's iptables", wg.FirewallSource)
+	}
+}
+
+// firewalldInput reads a firewalld rule set captured on Fedora 44 (issue #28).
+func firewalldInput(t *testing.T, fixture string) wireguard.InputFirewall {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", "internal", "wireguard", "testdata", fixture)) //nolint:gosec // testdata is in the repository
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw, ok := wireguard.ParseNftRuleset(string(data))
+	if !ok {
+		t.Fatalf("%s did not read", fixture)
+	}
+	return fw
+}
+
+// TestPortStepOnFirewalld: on a firewalld host whose zone does not allow the
+// port, the UDP IN column says closed and the wizard opens the port with
+// firewall-cmd, since an iptables rule would sit in a table firewalld's
+// reject never consults.
+func TestPortStepOnFirewalld(t *testing.T) {
+	a := newTestApp(t)
+	a.state.Input = firewalldInput(t, "nft-firewalld-closed.json")
+	a = startForwardingServer(t, a, "51821")
+	a = enter(t, a)
+	a = enter(t, a)
+	if !strings.Contains(a.confirm.Body, "Step 1 of 4") {
+		t.Fatalf("the port step was not counted:\n%s", a.confirm.Body)
+	}
+	a.state.Input = firewalldInput(t, "nft-firewalld-closed.json")
+	a = confirmAndRun(t, a)
+	a.state.Input = firewalldInput(t, "nft-firewalld-closed.json")
+	a = confirmAndRun(t, a)
+	if !strings.Contains(a.confirm.Command, "firewall-cmd --add-port=51821/udp") {
+		t.Errorf("port step preview = %q, want firewall-cmd", a.confirm.Command)
+	}
+	if !strings.Contains(a.confirm.Body, "firewalld does not allow udp/51821") ||
+		!strings.Contains(a.confirm.Body, "--permanent") {
+		t.Errorf("the port step does not explain firewalld:\n%s", a.confirm.Body)
+	}
+}
+
+// TestUDPInColumnReadsFirewalld: the column follows the input read, closed
+// before `firewall-cmd --add-port` and open after it.
+func TestUDPInColumnReadsFirewalld(t *testing.T) {
+	for fixture, want := range map[string]string{
+		"nft-firewalld-closed.json": "closed",
+		"nft-firewalld-open.json":   "open",
+	} {
+		dev := wireguard.Device{Name: "wg0", ListenPort: 51820,
+			PortVerdict: firewalldInput(t, fixture).UDPVerdict(51820)}
+		if got := firewallText(dev); got != want {
+			t.Errorf("%s: UDP IN = %q, want %q", fixture, got, want)
+		}
 	}
 }

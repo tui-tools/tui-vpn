@@ -84,8 +84,8 @@ type Device struct {
 	// coming in on this interface: it is a forwarding server (see
 	// ForwardingRules). Read from the live ruleset.
 	Forwarding bool `json:"forwarding"`
-	// PortVerdict is what the host's INPUT chain does with a handshake to
-	// ListenPort; unknown when the ruleset could not be read.
+	// PortVerdict is what the host firewall does with a handshake to
+	// ListenPort; unknown when it could not be read or judged.
 	PortVerdict Verdict `json:"portVerdict,omitempty"`
 }
 
@@ -119,10 +119,13 @@ type State struct {
 	Devices []Device `json:"devices"`
 
 	// Routes is `ip -j route`, the source of the networks and the egress a
-	// new forwarding server proposes. Firewall is `iptables -S`. Neither is
+	// new forwarding server proposes. Firewall is `iptables -S`, where the
+	// forwarding rules are. Input is the host firewall's input side, read
+	// from tui-firewall, nftables or iptables (input.go). None is
 	// serialised: they are addresses of this host.
-	Routes   []Route  `json:"-"`
-	Firewall Firewall `json:"-"`
+	Routes   []Route       `json:"-"`
+	Firewall Firewall      `json:"-"`
+	Input    InputFirewall `json:"-"`
 	// TUIFirewall reports that tui-firewall is installed: the tool that
 	// opens a port for good, which the listen-port step names.
 	TUIFirewall bool `json:"-"`
@@ -136,7 +139,7 @@ func (s *State) annotateFirewall() {
 		d.Forwarding = s.Firewall.Forwards(d.Name)
 		d.PortVerdict = VerdictUnknown
 		if d.ListenPort > 0 {
-			d.PortVerdict = s.Firewall.UDPPortVerdict(d.ListenPort)
+			d.PortVerdict = s.Input.UDPVerdict(d.ListenPort)
 		}
 	}
 }

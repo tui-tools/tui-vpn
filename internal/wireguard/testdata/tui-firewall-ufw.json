@@ -1,0 +1,119 @@
+{
+  "tool": "tui-firewall",
+  "version": "0.6.1",
+  "backend": "ufw",
+  "describe": "ufw (root)",
+  "enabled": true,
+  "logging": "low",
+  "groups": 1,
+  "rules": 2,
+  "compat": {
+    "backend": "ufw",
+    "version": "0.36.2",
+    "minimum": "0.36",
+    "notes": [
+      {
+        "range": "0.36.x",
+        "impact": "`status numbered` indexes IPv4 and IPv6 halves of one rule separately, so deleting by number renumbers the rest and the list is re-read after every delete"
+      }
+    ],
+    "status": "tested"
+  },
+  "selection": "the ufw service is running on this machine",
+  "backends": [
+    {
+      "name": "ufw",
+      "installed": true,
+      "active": true,
+      "enabled": true,
+      "selected": true
+    },
+    {
+      "name": "firewalld",
+      "installed": false,
+      "active": false,
+      "enabled": false,
+      "selected": false
+    },
+    {
+      "name": "iptables",
+      "installed": true,
+      "active": false,
+      "enabled": false,
+      "selected": false
+    },
+    {
+      "name": "nftables",
+      "installed": true,
+      "active": false,
+      "enabled": false,
+      "selected": false
+    }
+  ],
+  "model": {
+    "Backend": "ufw",
+    "Enabled": true,
+    "Logging": "low",
+    "LoggingOn": true,
+    "Warning": "",
+    "Groups": [
+      {
+        "Name": "rules",
+        "Title": "Rules",
+        "Description": "",
+        "View": "",
+        "Default": {
+          "Incoming": "deny",
+          "Outgoing": "allow",
+          "Routed": "",
+          "RoutedDisabled": true,
+          "Target": ""
+        },
+        "PolicySlots": [
+          "incoming",
+          "outgoing",
+          "routed"
+        ],
+        "Rules": [
+          {
+            "ID": "1",
+            "Index": 1,
+            "Kind": "",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "IN",
+            "Proto": "tcp",
+            "Ports": "22",
+            "From": "Anywhere",
+            "To": "22/tcp",
+            "Service": "",
+            "Comment": "",
+            "Family": "",
+            "Raw": "22/tcp                     ALLOW IN    Anywhere",
+            "Extra": null
+          },
+          {
+            "ID": "2",
+            "Index": 2,
+            "Kind": "",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "IN",
+            "Proto": "tcp",
+            "Ports": "22",
+            "From": "Anywhere",
+            "To": "22/tcp",
+            "Service": "",
+            "Comment": "",
+            "Family": "v6",
+            "Raw": "22/tcp (v6)                ALLOW IN    Anywhere (v6)",
+            "Extra": null
+          }
+        ]
+      }
+    ],
+    "Services": [
+      "OpenSSH"
+    ]
+  }
+}

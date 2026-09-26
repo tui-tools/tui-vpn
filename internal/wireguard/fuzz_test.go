@@ -87,13 +87,50 @@ func FuzzParseIptablesRules(f *testing.F) {
 	f.Add("-N a\n-A INPUT -j a\n-A a -j INPUT\n")
 	f.Fuzz(func(t *testing.T, out string) {
 		fw := ParseIptablesRules(out)
-		switch v := fw.UDPPortVerdict(51820); v {
+		_ = fw.Forwards("wg0")
+		input, _ := ParseIptablesInput(out)
+		assertVerdict(t, input)
+	})
+}
+
+// FuzzParseNftRuleset feeds arbitrary JSON to the nftables reader, whose
+// verdict for a port decides the UDP IN column and the wizard's port step:
+// for any input it has to be one of the four verdicts, and following jumps
+// has to terminate.
+func FuzzParseNftRuleset(f *testing.F) {
+	seedFrom(f, "nft-")
+	f.Add(`{"nftables":[{"chain":{"family":"inet","table":"t","name":"in","hook":"input",` +
+		`"type":"filter","policy":"drop"}},{"chain":{"family":"inet","table":"t","name":"a"}},` +
+		`{"rule":{"family":"inet","table":"t","chain":"in","expr":[{"jump":{"target":"a"}}]}},` +
+		`{"rule":{"family":"inet","table":"t","chain":"a","expr":[{"jump":{"target":"a"}}]}}]}`)
+	f.Fuzz(func(t *testing.T, out string) {
+		fw, _ := ParseNftRuleset(out)
+		assertVerdict(t, fw)
+	})
+}
+
+// FuzzParseTuiFirewallCheck feeds arbitrary JSON to the reader of
+// tui-firewall's --check, the first source the listen-port verdict is read
+// from.
+func FuzzParseTuiFirewallCheck(f *testing.F) {
+	seedFrom(f, "tui-firewall-")
+	f.Fuzz(func(t *testing.T, out string) {
+		fw, _ := ParseTuiFirewallCheck(out)
+		assertVerdict(t, fw)
+	})
+}
+
+// assertVerdict checks that a read firewall answers one of the four verdicts
+// for a few ports, the edges of the range included.
+func assertVerdict(t *testing.T, fw InputFirewall) {
+	t.Helper()
+	for _, port := range []int{0, 1, 51820, 65535} {
+		switch v := fw.UDPVerdict(port); v {
 		case VerdictAccept, VerdictReject, VerdictDrop, VerdictUnknown:
 		default:
-			t.Fatalf("verdict %q is not one of the four", v)
+			t.Fatalf("udp/%d: verdict %q is not one of the four", port, v)
 		}
-		_ = fw.Forwards("wg0")
-	})
+	}
 }
 
 // FuzzParseRoutes feeds arbitrary JSON to the route parser, whose answer

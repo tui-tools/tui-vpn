@@ -90,6 +90,7 @@ func (f *Fake) Load(_ context.Context) (State, error) {
 	state := f.state
 	state.Devices = append([]Device(nil), f.state.Devices...)
 	state.Firewall = ParseIptablesRules(strings.Join(f.firewall, "\n"))
+	state.Input, _ = ParseIptablesInput(strings.Join(f.firewall, "\n")) // the demo always reads
 	state.annotateFirewall()
 	return state, nil
 }

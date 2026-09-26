@@ -4,6 +4,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -57,6 +58,16 @@ func TestFixturesCarryNoRealAddress(t *testing.T) {
 				}
 			case strings.HasPrefix(name, "iptables"):
 				addrs = append(addrs, ruleAddrs(ParseIptablesRules(string(data)))...)
+			case strings.HasPrefix(name, "nft-"), strings.HasPrefix(name, "tui-firewall-"):
+				// JSON rule sets: every token shaped like an address, minus
+				// the ones every firewalld and ufw carry (multicast groups
+				// and firewalld's built-in 6to4 filter).
+				for _, addr := range textAddrs(string(data)) {
+					if addr.IsMulticast() || sixToFour.Contains(addr) {
+						continue
+					}
+					addrs = append(addrs, addr)
+				}
 			default:
 				t.Fatalf("no address check for fixture %s: add a case", name)
 			}
@@ -88,6 +99,28 @@ func TestDemoDataCarriesNoRealAddress(t *testing.T) {
 	for _, a := range ruleAddrs(ParseIptablesRules(strings.Join(demoFirewall, "\n"))) {
 		assertDocumentationAddress(t, a)
 	}
+}
+
+// sixToFour is 2002::/16. firewalld's own rule set filters the 6to4
+// encodings of the private and reserved IPv4 ranges out of this block, the
+// same on every machine.
+var sixToFour = netip.MustParsePrefix("2002::/16")
+
+// addrToken is anything shaped like an IPv4 or IPv6 address.
+var addrToken = regexp.MustCompile(`[0-9A-Fa-f]*[:.][0-9A-Fa-f:.]+`)
+
+// textAddrs is every token of a text that parses as an address.
+func textAddrs(text string) []netip.Addr {
+	var addrs []netip.Addr
+	for _, tok := range addrToken.FindAllString(text, -1) {
+		// A mapped address (::ffff:0.0.0.0) is judged as the IPv4 it maps.
+		if a, err := netip.ParseAddr(strings.Trim(tok, ".:")); err == nil {
+			addrs = append(addrs, a.Unmap())
+		} else if a, err := netip.ParseAddr(tok); err == nil {
+			addrs = append(addrs, a.Unmap())
+		}
+	}
+	return addrs
 }
 
 // ruleAddrs is every -s and -d address in a ruleset.

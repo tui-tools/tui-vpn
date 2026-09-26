@@ -1,0 +1,1859 @@
+{
+  "tool": "tui-firewall",
+  "version": "0.6.1",
+  "backend": "firewalld",
+  "describe": "firewall-cmd (root)",
+  "enabled": true,
+  "logging": "off",
+  "groups": 18,
+  "rules": 61,
+  "compat": {
+    "backend": "firewalld",
+    "version": "2.4.4",
+    "minimum": "0.9",
+    "notes": [
+      {
+        "range": "\u003e=2.2",
+        "impact": "firewalld removed the lockdown feature, so no lockdown state is shown"
+      }
+    ],
+    "status": "tested"
+  },
+  "selection": "the firewalld service is running on this machine",
+  "backends": [
+    {
+      "name": "ufw",
+      "installed": false,
+      "active": false,
+      "enabled": false,
+      "selected": false
+    },
+    {
+      "name": "firewalld",
+      "installed": true,
+      "active": true,
+      "enabled": true,
+      "selected": true
+    },
+    {
+      "name": "iptables",
+      "installed": true,
+      "active": false,
+      "enabled": false,
+      "selected": false
+    },
+    {
+      "name": "nftables",
+      "installed": true,
+      "active": false,
+      "enabled": false,
+      "selected": false
+    }
+  ],
+  "model": {
+    "Backend": "firewalld",
+    "Enabled": true,
+    "Logging": "off",
+    "LoggingOn": false,
+    "Warning": "",
+    "Groups": [
+      {
+        "Name": "public",
+        "Title": "public (default)",
+        "Description": "active  ·  interfaces: enp0s4",
+        "View": "",
+        "Default": {
+          "Incoming": "",
+          "Outgoing": "",
+          "Routed": "",
+          "RoutedDisabled": false,
+          "Target": "default"
+        },
+        "PolicySlots": [
+          "target"
+        ],
+        "Rules": [
+          {
+            "ID": "interface:enp0s4",
+            "Index": 1,
+            "Kind": "interface",
+            "Note": "runtime only",
+            "Action": "",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "enp0s4",
+            "Service": "",
+            "Comment": "",
+            "Family": "",
+            "Raw": "enp0s4",
+            "Extra": {
+              "scope": "runtime",
+              "zone": "public"
+            }
+          },
+          {
+            "ID": "service:dhcpv6-client",
+            "Index": 2,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "dhcpv6-client",
+            "Service": "dhcpv6-client",
+            "Comment": "",
+            "Family": "",
+            "Raw": "dhcpv6-client",
+            "Extra": {
+              "scope": "both",
+              "zone": "public"
+            }
+          },
+          {
+            "ID": "service:mdns",
+            "Index": 3,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "mdns",
+            "Service": "mdns",
+            "Comment": "",
+            "Family": "",
+            "Raw": "mdns",
+            "Extra": {
+              "scope": "both",
+              "zone": "public"
+            }
+          },
+          {
+            "ID": "service:ssh",
+            "Index": 4,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "ssh",
+            "Service": "ssh",
+            "Comment": "",
+            "Family": "",
+            "Raw": "ssh",
+            "Extra": {
+              "scope": "both",
+              "zone": "public"
+            }
+          },
+          {
+            "ID": "forward:forward",
+            "Index": 5,
+            "Kind": "forward",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "forward",
+            "Service": "",
+            "Comment": "",
+            "Family": "",
+            "Raw": "forward",
+            "Extra": {
+              "scope": "both",
+              "zone": "public"
+            }
+          }
+        ]
+      },
+      {
+        "Name": "FedoraServer",
+        "Title": "FedoraServer",
+        "Description": "",
+        "View": "",
+        "Default": {
+          "Incoming": "",
+          "Outgoing": "",
+          "Routed": "",
+          "RoutedDisabled": false,
+          "Target": "default"
+        },
+        "PolicySlots": [
+          "target"
+        ],
+        "Rules": [
+          {
+            "ID": "service:cockpit",
+            "Index": 1,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "cockpit",
+            "Service": "cockpit",
+            "Comment": "",
+            "Family": "",
+            "Raw": "cockpit",
+            "Extra": {
+              "scope": "both",
+              "zone": "FedoraServer"
+            }
+          },
+          {
+            "ID": "service:dhcpv6-client",
+            "Index": 2,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "dhcpv6-client",
+            "Service": "dhcpv6-client",
+            "Comment": "",
+            "Family": "",
+            "Raw": "dhcpv6-client",
+            "Extra": {
+              "scope": "both",
+              "zone": "FedoraServer"
+            }
+          },
+          {
+            "ID": "service:ssh",
+            "Index": 3,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "ssh",
+            "Service": "ssh",
+            "Comment": "",
+            "Family": "",
+            "Raw": "ssh",
+            "Extra": {
+              "scope": "both",
+              "zone": "FedoraServer"
+            }
+          },
+          {
+            "ID": "forward:forward",
+            "Index": 4,
+            "Kind": "forward",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "forward",
+            "Service": "",
+            "Comment": "",
+            "Family": "",
+            "Raw": "forward",
+            "Extra": {
+              "scope": "both",
+              "zone": "FedoraServer"
+            }
+          }
+        ]
+      },
+      {
+        "Name": "FedoraWorkstation",
+        "Title": "FedoraWorkstation",
+        "Description": "",
+        "View": "",
+        "Default": {
+          "Incoming": "",
+          "Outgoing": "",
+          "Routed": "",
+          "RoutedDisabled": false,
+          "Target": "default"
+        },
+        "PolicySlots": [
+          "target"
+        ],
+        "Rules": [
+          {
+            "ID": "service:dhcpv6-client",
+            "Index": 1,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "dhcpv6-client",
+            "Service": "dhcpv6-client",
+            "Comment": "",
+            "Family": "",
+            "Raw": "dhcpv6-client",
+            "Extra": {
+              "scope": "both",
+              "zone": "FedoraWorkstation"
+            }
+          },
+          {
+            "ID": "service:samba-client",
+            "Index": 2,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "samba-client",
+            "Service": "samba-client",
+            "Comment": "",
+            "Family": "",
+            "Raw": "samba-client",
+            "Extra": {
+              "scope": "both",
+              "zone": "FedoraWorkstation"
+            }
+          },
+          {
+            "ID": "service:ssh",
+            "Index": 3,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "ssh",
+            "Service": "ssh",
+            "Comment": "",
+            "Family": "",
+            "Raw": "ssh",
+            "Extra": {
+              "scope": "both",
+              "zone": "FedoraWorkstation"
+            }
+          },
+          {
+            "ID": "port:1025-65535/udp",
+            "Index": 4,
+            "Kind": "port",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "udp",
+            "Ports": "1025-65535",
+            "From": "",
+            "To": "1025-65535/udp",
+            "Service": "",
+            "Comment": "",
+            "Family": "",
+            "Raw": "1025-65535/udp",
+            "Extra": {
+              "scope": "both",
+              "zone": "FedoraWorkstation"
+            }
+          },
+          {
+            "ID": "port:1025-65535/tcp",
+            "Index": 5,
+            "Kind": "port",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "tcp",
+            "Ports": "1025-65535",
+            "From": "",
+            "To": "1025-65535/tcp",
+            "Service": "",
+            "Comment": "",
+            "Family": "",
+            "Raw": "1025-65535/tcp",
+            "Extra": {
+              "scope": "both",
+              "zone": "FedoraWorkstation"
+            }
+          },
+          {
+            "ID": "forward:forward",
+            "Index": 6,
+            "Kind": "forward",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "forward",
+            "Service": "",
+            "Comment": "",
+            "Family": "",
+            "Raw": "forward",
+            "Extra": {
+              "scope": "both",
+              "zone": "FedoraWorkstation"
+            }
+          }
+        ]
+      },
+      {
+        "Name": "block",
+        "Title": "block",
+        "Description": "",
+        "View": "",
+        "Default": {
+          "Incoming": "",
+          "Outgoing": "",
+          "Routed": "",
+          "RoutedDisabled": false,
+          "Target": "%%REJECT%%"
+        },
+        "PolicySlots": [
+          "target"
+        ],
+        "Rules": [
+          {
+            "ID": "forward:forward",
+            "Index": 1,
+            "Kind": "forward",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "forward",
+            "Service": "",
+            "Comment": "",
+            "Family": "",
+            "Raw": "forward",
+            "Extra": {
+              "scope": "both",
+              "zone": "block"
+            }
+          }
+        ]
+      },
+      {
+        "Name": "dmz",
+        "Title": "dmz",
+        "Description": "",
+        "View": "",
+        "Default": {
+          "Incoming": "",
+          "Outgoing": "",
+          "Routed": "",
+          "RoutedDisabled": false,
+          "Target": "default"
+        },
+        "PolicySlots": [
+          "target"
+        ],
+        "Rules": [
+          {
+            "ID": "service:ssh",
+            "Index": 1,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "ssh",
+            "Service": "ssh",
+            "Comment": "",
+            "Family": "",
+            "Raw": "ssh",
+            "Extra": {
+              "scope": "both",
+              "zone": "dmz"
+            }
+          },
+          {
+            "ID": "forward:forward",
+            "Index": 2,
+            "Kind": "forward",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "forward",
+            "Service": "",
+            "Comment": "",
+            "Family": "",
+            "Raw": "forward",
+            "Extra": {
+              "scope": "both",
+              "zone": "dmz"
+            }
+          }
+        ]
+      },
+      {
+        "Name": "drop",
+        "Title": "drop",
+        "Description": "",
+        "View": "",
+        "Default": {
+          "Incoming": "",
+          "Outgoing": "",
+          "Routed": "",
+          "RoutedDisabled": false,
+          "Target": "DROP"
+        },
+        "PolicySlots": [
+          "target"
+        ],
+        "Rules": [
+          {
+            "ID": "forward:forward",
+            "Index": 1,
+            "Kind": "forward",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "forward",
+            "Service": "",
+            "Comment": "",
+            "Family": "",
+            "Raw": "forward",
+            "Extra": {
+              "scope": "both",
+              "zone": "drop"
+            }
+          }
+        ]
+      },
+      {
+        "Name": "external",
+        "Title": "external",
+        "Description": "",
+        "View": "",
+        "Default": {
+          "Incoming": "",
+          "Outgoing": "",
+          "Routed": "",
+          "RoutedDisabled": false,
+          "Target": "default"
+        },
+        "PolicySlots": [
+          "target"
+        ],
+        "Rules": [
+          {
+            "ID": "service:ssh",
+            "Index": 1,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "ssh",
+            "Service": "ssh",
+            "Comment": "",
+            "Family": "",
+            "Raw": "ssh",
+            "Extra": {
+              "scope": "both",
+              "zone": "external"
+            }
+          },
+          {
+            "ID": "masquerade:masquerade",
+            "Index": 2,
+            "Kind": "masquerade",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "masquerade",
+            "Service": "",
+            "Comment": "",
+            "Family": "",
+            "Raw": "masquerade",
+            "Extra": {
+              "scope": "both",
+              "zone": "external"
+            }
+          },
+          {
+            "ID": "forward:forward",
+            "Index": 3,
+            "Kind": "forward",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "forward",
+            "Service": "",
+            "Comment": "",
+            "Family": "",
+            "Raw": "forward",
+            "Extra": {
+              "scope": "both",
+              "zone": "external"
+            }
+          }
+        ]
+      },
+      {
+        "Name": "home",
+        "Title": "home",
+        "Description": "",
+        "View": "",
+        "Default": {
+          "Incoming": "",
+          "Outgoing": "",
+          "Routed": "",
+          "RoutedDisabled": false,
+          "Target": "default"
+        },
+        "PolicySlots": [
+          "target"
+        ],
+        "Rules": [
+          {
+            "ID": "service:dhcpv6-client",
+            "Index": 1,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "dhcpv6-client",
+            "Service": "dhcpv6-client",
+            "Comment": "",
+            "Family": "",
+            "Raw": "dhcpv6-client",
+            "Extra": {
+              "scope": "both",
+              "zone": "home"
+            }
+          },
+          {
+            "ID": "service:mdns",
+            "Index": 2,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "mdns",
+            "Service": "mdns",
+            "Comment": "",
+            "Family": "",
+            "Raw": "mdns",
+            "Extra": {
+              "scope": "both",
+              "zone": "home"
+            }
+          },
+          {
+            "ID": "service:samba-client",
+            "Index": 3,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "samba-client",
+            "Service": "samba-client",
+            "Comment": "",
+            "Family": "",
+            "Raw": "samba-client",
+            "Extra": {
+              "scope": "both",
+              "zone": "home"
+            }
+          },
+          {
+            "ID": "service:ssh",
+            "Index": 4,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "ssh",
+            "Service": "ssh",
+            "Comment": "",
+            "Family": "",
+            "Raw": "ssh",
+            "Extra": {
+              "scope": "both",
+              "zone": "home"
+            }
+          },
+          {
+            "ID": "forward:forward",
+            "Index": 5,
+            "Kind": "forward",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "forward",
+            "Service": "",
+            "Comment": "",
+            "Family": "",
+            "Raw": "forward",
+            "Extra": {
+              "scope": "both",
+              "zone": "home"
+            }
+          }
+        ]
+      },
+      {
+        "Name": "internal",
+        "Title": "internal",
+        "Description": "",
+        "View": "",
+        "Default": {
+          "Incoming": "",
+          "Outgoing": "",
+          "Routed": "",
+          "RoutedDisabled": false,
+          "Target": "default"
+        },
+        "PolicySlots": [
+          "target"
+        ],
+        "Rules": [
+          {
+            "ID": "service:dhcpv6-client",
+            "Index": 1,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "dhcpv6-client",
+            "Service": "dhcpv6-client",
+            "Comment": "",
+            "Family": "",
+            "Raw": "dhcpv6-client",
+            "Extra": {
+              "scope": "both",
+              "zone": "internal"
+            }
+          },
+          {
+            "ID": "service:mdns",
+            "Index": 2,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "mdns",
+            "Service": "mdns",
+            "Comment": "",
+            "Family": "",
+            "Raw": "mdns",
+            "Extra": {
+              "scope": "both",
+              "zone": "internal"
+            }
+          },
+          {
+            "ID": "service:samba-client",
+            "Index": 3,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "samba-client",
+            "Service": "samba-client",
+            "Comment": "",
+            "Family": "",
+            "Raw": "samba-client",
+            "Extra": {
+              "scope": "both",
+              "zone": "internal"
+            }
+          },
+          {
+            "ID": "service:ssh",
+            "Index": 4,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "ssh",
+            "Service": "ssh",
+            "Comment": "",
+            "Family": "",
+            "Raw": "ssh",
+            "Extra": {
+              "scope": "both",
+              "zone": "internal"
+            }
+          },
+          {
+            "ID": "forward:forward",
+            "Index": 5,
+            "Kind": "forward",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "forward",
+            "Service": "",
+            "Comment": "",
+            "Family": "",
+            "Raw": "forward",
+            "Extra": {
+              "scope": "both",
+              "zone": "internal"
+            }
+          }
+        ]
+      },
+      {
+        "Name": "nm-shared",
+        "Title": "nm-shared",
+        "Description": "",
+        "View": "",
+        "Default": {
+          "Incoming": "",
+          "Outgoing": "",
+          "Routed": "",
+          "RoutedDisabled": false,
+          "Target": "ACCEPT"
+        },
+        "PolicySlots": [
+          "target"
+        ],
+        "Rules": [
+          {
+            "ID": "service:dhcp",
+            "Index": 1,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "dhcp",
+            "Service": "dhcp",
+            "Comment": "",
+            "Family": "",
+            "Raw": "dhcp",
+            "Extra": {
+              "scope": "both",
+              "zone": "nm-shared"
+            }
+          },
+          {
+            "ID": "service:dns",
+            "Index": 2,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "dns",
+            "Service": "dns",
+            "Comment": "",
+            "Family": "",
+            "Raw": "dns",
+            "Extra": {
+              "scope": "both",
+              "zone": "nm-shared"
+            }
+          },
+          {
+            "ID": "service:ssh",
+            "Index": 3,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "ssh",
+            "Service": "ssh",
+            "Comment": "",
+            "Family": "",
+            "Raw": "ssh",
+            "Extra": {
+              "scope": "both",
+              "zone": "nm-shared"
+            }
+          },
+          {
+            "ID": "protocol:icmp",
+            "Index": 4,
+            "Kind": "protocol",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "icmp",
+            "Service": "",
+            "Comment": "",
+            "Family": "",
+            "Raw": "icmp",
+            "Extra": {
+              "scope": "both",
+              "zone": "nm-shared"
+            }
+          },
+          {
+            "ID": "protocol:ipv6-icmp",
+            "Index": 5,
+            "Kind": "protocol",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "ipv6-icmp",
+            "Service": "",
+            "Comment": "",
+            "Family": "",
+            "Raw": "ipv6-icmp",
+            "Extra": {
+              "scope": "both",
+              "zone": "nm-shared"
+            }
+          },
+          {
+            "ID": "rich:rule priority=\"32767\" reject",
+            "Index": 6,
+            "Kind": "rich",
+            "Note": "",
+            "Action": "REJECT",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "",
+            "Service": "",
+            "Comment": "",
+            "Family": "",
+            "Raw": "rule priority=\"32767\" reject",
+            "Extra": {
+              "scope": "both",
+              "zone": "nm-shared"
+            }
+          }
+        ]
+      },
+      {
+        "Name": "trusted",
+        "Title": "trusted",
+        "Description": "",
+        "View": "",
+        "Default": {
+          "Incoming": "",
+          "Outgoing": "",
+          "Routed": "",
+          "RoutedDisabled": false,
+          "Target": "ACCEPT"
+        },
+        "PolicySlots": [
+          "target"
+        ],
+        "Rules": [
+          {
+            "ID": "forward:forward",
+            "Index": 1,
+            "Kind": "forward",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "forward",
+            "Service": "",
+            "Comment": "",
+            "Family": "",
+            "Raw": "forward",
+            "Extra": {
+              "scope": "both",
+              "zone": "trusted"
+            }
+          }
+        ]
+      },
+      {
+        "Name": "work",
+        "Title": "work",
+        "Description": "",
+        "View": "",
+        "Default": {
+          "Incoming": "",
+          "Outgoing": "",
+          "Routed": "",
+          "RoutedDisabled": false,
+          "Target": "default"
+        },
+        "PolicySlots": [
+          "target"
+        ],
+        "Rules": [
+          {
+            "ID": "service:dhcpv6-client",
+            "Index": 1,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "dhcpv6-client",
+            "Service": "dhcpv6-client",
+            "Comment": "",
+            "Family": "",
+            "Raw": "dhcpv6-client",
+            "Extra": {
+              "scope": "both",
+              "zone": "work"
+            }
+          },
+          {
+            "ID": "service:mdns",
+            "Index": 2,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "mdns",
+            "Service": "mdns",
+            "Comment": "",
+            "Family": "",
+            "Raw": "mdns",
+            "Extra": {
+              "scope": "both",
+              "zone": "work"
+            }
+          },
+          {
+            "ID": "service:ssh",
+            "Index": 3,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "ssh",
+            "Service": "ssh",
+            "Comment": "",
+            "Family": "",
+            "Raw": "ssh",
+            "Extra": {
+              "scope": "both",
+              "zone": "work"
+            }
+          },
+          {
+            "ID": "forward:forward",
+            "Index": 4,
+            "Kind": "forward",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "forward",
+            "Service": "",
+            "Comment": "",
+            "Family": "",
+            "Raw": "forward",
+            "Extra": {
+              "scope": "both",
+              "zone": "work"
+            }
+          }
+        ]
+      },
+      {
+        "Name": "policy/allow-host-ipv6",
+        "Title": "allow-host-ipv6 (policy)",
+        "Description": "target: CONTINUE  ·  ANY → HOST",
+        "View": "",
+        "Default": {
+          "Incoming": "",
+          "Outgoing": "",
+          "Routed": "",
+          "RoutedDisabled": false,
+          "Target": ""
+        },
+        "PolicySlots": null,
+        "Rules": [
+          {
+            "ID": "rich:rule family=\"ipv6\" icmp-type name=\"mld-listener-done\" accept",
+            "Index": 1,
+            "Kind": "rich",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "",
+            "Service": "",
+            "Comment": "",
+            "Family": "v6",
+            "Raw": "rule family=\"ipv6\" icmp-type name=\"mld-listener-done\" accept",
+            "Extra": {
+              "scope": "both",
+              "zone": "policy/allow-host-ipv6"
+            }
+          },
+          {
+            "ID": "rich:rule family=\"ipv6\" icmp-type name=\"mld-listener-query\" accept",
+            "Index": 2,
+            "Kind": "rich",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "",
+            "Service": "",
+            "Comment": "",
+            "Family": "v6",
+            "Raw": "rule family=\"ipv6\" icmp-type name=\"mld-listener-query\" accept",
+            "Extra": {
+              "scope": "both",
+              "zone": "policy/allow-host-ipv6"
+            }
+          },
+          {
+            "ID": "rich:rule family=\"ipv6\" icmp-type name=\"mld-listener-report\" accept",
+            "Index": 3,
+            "Kind": "rich",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "",
+            "Service": "",
+            "Comment": "",
+            "Family": "v6",
+            "Raw": "rule family=\"ipv6\" icmp-type name=\"mld-listener-report\" accept",
+            "Extra": {
+              "scope": "both",
+              "zone": "policy/allow-host-ipv6"
+            }
+          },
+          {
+            "ID": "rich:rule family=\"ipv6\" icmp-type name=\"mld2-listener-report\" accept",
+            "Index": 4,
+            "Kind": "rich",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "",
+            "Service": "",
+            "Comment": "",
+            "Family": "v6",
+            "Raw": "rule family=\"ipv6\" icmp-type name=\"mld2-listener-report\" accept",
+            "Extra": {
+              "scope": "both",
+              "zone": "policy/allow-host-ipv6"
+            }
+          },
+          {
+            "ID": "rich:rule family=\"ipv6\" icmp-type name=\"neighbour-advertisement\" accept",
+            "Index": 5,
+            "Kind": "rich",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "",
+            "Service": "",
+            "Comment": "",
+            "Family": "v6",
+            "Raw": "rule family=\"ipv6\" icmp-type name=\"neighbour-advertisement\" accept",
+            "Extra": {
+              "scope": "both",
+              "zone": "policy/allow-host-ipv6"
+            }
+          },
+          {
+            "ID": "rich:rule family=\"ipv6\" icmp-type name=\"neighbour-solicitation\" accept",
+            "Index": 6,
+            "Kind": "rich",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "",
+            "Service": "",
+            "Comment": "",
+            "Family": "v6",
+            "Raw": "rule family=\"ipv6\" icmp-type name=\"neighbour-solicitation\" accept",
+            "Extra": {
+              "scope": "both",
+              "zone": "policy/allow-host-ipv6"
+            }
+          },
+          {
+            "ID": "rich:rule family=\"ipv6\" icmp-type name=\"redirect\" accept",
+            "Index": 7,
+            "Kind": "rich",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "",
+            "Service": "",
+            "Comment": "",
+            "Family": "v6",
+            "Raw": "rule family=\"ipv6\" icmp-type name=\"redirect\" accept",
+            "Extra": {
+              "scope": "both",
+              "zone": "policy/allow-host-ipv6"
+            }
+          },
+          {
+            "ID": "rich:rule family=\"ipv6\" icmp-type name=\"router-advertisement\" accept",
+            "Index": 8,
+            "Kind": "rich",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "",
+            "Service": "",
+            "Comment": "",
+            "Family": "v6",
+            "Raw": "rule family=\"ipv6\" icmp-type name=\"router-advertisement\" accept",
+            "Extra": {
+              "scope": "both",
+              "zone": "policy/allow-host-ipv6"
+            }
+          }
+        ]
+      },
+      {
+        "Name": "policy/gateway-dmz-to-HOST",
+        "Title": "gateway-dmz-to-HOST (policy)",
+        "Description": "target: CONTINUE  ·  dmz → HOST",
+        "View": "",
+        "Default": {
+          "Incoming": "",
+          "Outgoing": "",
+          "Routed": "",
+          "RoutedDisabled": false,
+          "Target": ""
+        },
+        "PolicySlots": null,
+        "Rules": [
+          {
+            "ID": "service:dhcp",
+            "Index": 1,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "dhcp",
+            "Service": "dhcp",
+            "Comment": "",
+            "Family": "",
+            "Raw": "dhcp",
+            "Extra": {
+              "scope": "both",
+              "zone": "policy/gateway-dmz-to-HOST"
+            }
+          },
+          {
+            "ID": "service:dns",
+            "Index": 2,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "dns",
+            "Service": "dns",
+            "Comment": "",
+            "Family": "",
+            "Raw": "dns",
+            "Extra": {
+              "scope": "both",
+              "zone": "policy/gateway-dmz-to-HOST"
+            }
+          }
+        ]
+      },
+      {
+        "Name": "policy/gateway-lan-to-HOST",
+        "Title": "gateway-lan-to-HOST (policy)",
+        "Description": "target: CONTINUE  ·  internal,home,trusted → HOST",
+        "View": "",
+        "Default": {
+          "Incoming": "",
+          "Outgoing": "",
+          "Routed": "",
+          "RoutedDisabled": false,
+          "Target": ""
+        },
+        "PolicySlots": null,
+        "Rules": [
+          {
+            "ID": "service:dhcp",
+            "Index": 1,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "dhcp",
+            "Service": "dhcp",
+            "Comment": "",
+            "Family": "",
+            "Raw": "dhcp",
+            "Extra": {
+              "scope": "both",
+              "zone": "policy/gateway-lan-to-HOST"
+            }
+          },
+          {
+            "ID": "service:dns",
+            "Index": 2,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "dns",
+            "Service": "dns",
+            "Comment": "",
+            "Family": "",
+            "Raw": "dns",
+            "Extra": {
+              "scope": "both",
+              "zone": "policy/gateway-lan-to-HOST"
+            }
+          },
+          {
+            "ID": "service:ssh",
+            "Index": 3,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "ssh",
+            "Service": "ssh",
+            "Comment": "",
+            "Family": "",
+            "Raw": "ssh",
+            "Extra": {
+              "scope": "both",
+              "zone": "policy/gateway-lan-to-HOST"
+            }
+          }
+        ]
+      },
+      {
+        "Name": "policy/gateway-lan-to-work",
+        "Title": "gateway-lan-to-work (policy)",
+        "Description": "target: ACCEPT  ·  internal,home,trusted → work",
+        "View": "",
+        "Default": {
+          "Incoming": "",
+          "Outgoing": "",
+          "Routed": "",
+          "RoutedDisabled": false,
+          "Target": ""
+        },
+        "PolicySlots": null,
+        "Rules": [
+          {
+            "ID": "service:ftp",
+            "Index": 1,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "ftp",
+            "Service": "ftp",
+            "Comment": "",
+            "Family": "",
+            "Raw": "ftp",
+            "Extra": {
+              "scope": "both",
+              "zone": "policy/gateway-lan-to-work"
+            }
+          },
+          {
+            "ID": "service:tftp",
+            "Index": 2,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "tftp",
+            "Service": "tftp",
+            "Comment": "",
+            "Family": "",
+            "Raw": "tftp",
+            "Extra": {
+              "scope": "both",
+              "zone": "policy/gateway-lan-to-work"
+            }
+          }
+        ]
+      },
+      {
+        "Name": "policy/gateway-lan-to-world",
+        "Title": "gateway-lan-to-world (policy)",
+        "Description": "target: ACCEPT  ·  internal,home,trusted → external,public",
+        "View": "",
+        "Default": {
+          "Incoming": "",
+          "Outgoing": "",
+          "Routed": "",
+          "RoutedDisabled": false,
+          "Target": ""
+        },
+        "PolicySlots": null,
+        "Rules": [
+          {
+            "ID": "service:ftp",
+            "Index": 1,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "ftp",
+            "Service": "ftp",
+            "Comment": "",
+            "Family": "",
+            "Raw": "ftp",
+            "Extra": {
+              "scope": "both",
+              "zone": "policy/gateway-lan-to-world"
+            }
+          },
+          {
+            "ID": "service:tftp",
+            "Index": 2,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "tftp",
+            "Service": "tftp",
+            "Comment": "",
+            "Family": "",
+            "Raw": "tftp",
+            "Extra": {
+              "scope": "both",
+              "zone": "policy/gateway-lan-to-world"
+            }
+          }
+        ]
+      },
+      {
+        "Name": "policy/gateway-world-to-HOST",
+        "Title": "gateway-world-to-HOST (policy)",
+        "Description": "target: CONTINUE  ·  external,public → HOST",
+        "View": "",
+        "Default": {
+          "Incoming": "",
+          "Outgoing": "",
+          "Routed": "",
+          "RoutedDisabled": false,
+          "Target": ""
+        },
+        "PolicySlots": null,
+        "Rules": [
+          {
+            "ID": "service:dhcpv6-client",
+            "Index": 1,
+            "Kind": "service",
+            "Note": "",
+            "Action": "ALLOW",
+            "Direction": "",
+            "Proto": "",
+            "Ports": "",
+            "From": "",
+            "To": "dhcpv6-client",
+            "Service": "dhcpv6-client",
+            "Comment": "",
+            "Family": "",
+            "Raw": "dhcpv6-client",
+            "Extra": {
+              "scope": "both",
+              "zone": "policy/gateway-world-to-HOST"
+            }
+          }
+        ]
+      }
+    ],
+    "Services": [
+      "0-AD",
+      "RH-Satellite-6",
+      "RH-Satellite-6-capsule",
+      "afp",
+      "alvr",
+      "amanda-client",
+      "amanda-k5-client",
+      "amqp",
+      "amqps",
+      "anno-1602",
+      "anno-1800",
+      "apcupsd",
+      "aseqnet",
+      "audit",
+      "ausweisapp2",
+      "bacula",
+      "bacula-client",
+      "bareos-director",
+      "bareos-filedaemon",
+      "bareos-storage",
+      "bb",
+      "bgp",
+      "bitcoin",
+      "bitcoin-rpc",
+      "bitcoin-testnet",
+      "bitcoin-testnet-rpc",
+      "bittorrent-lsd",
+      "ceph",
+      "ceph-exporter",
+      "ceph-mon",
+      "cfengine",
+      "checkmk-agent",
+      "civilization-iv",
+      "civilization-v",
+      "cockpit",
+      "collectd",
+      "condor-collector",
+      "cratedb",
+      "ctdb",
+      "dds",
+      "dds-multicast",
+      "dds-unicast",
+      "dhcp",
+      "dhcpv6",
+      "dhcpv6-client",
+      "distcc",
+      "dns",
+      "dns-over-quic",
+      "dns-over-tls",
+      "docker-registry",
+      "docker-swarm",
+      "dropbox-lansync",
+      "elasticsearch",
+      "etcd-client",
+      "etcd-server",
+      "factorio",
+      "finger",
+      "foreman",
+      "foreman-proxy",
+      "freeipa-4",
+      "freeipa-ldap",
+      "freeipa-ldaps",
+      "freeipa-replication",
+      "freeipa-trust",
+      "ftp",
+      "galera",
+      "ganglia-client",
+      "ganglia-master",
+      "git",
+      "gitea",
+      "gpsd",
+      "grafana",
+      "gre",
+      "high-availability",
+      "http",
+      "http3",
+      "https",
+      "ident",
+      "imap",
+      "imaps",
+      "iperf2",
+      "iperf3",
+      "ipfs",
+      "ipp",
+      "ipp-client",
+      "ipsec",
+      "irc",
+      "ircs",
+      "iscsi-target",
+      "isns",
+      "jenkins",
+      "kadmin",
+      "kdeconnect",
+      "kerberos",
+      "kibana",
+      "klogin",
+      "kpasswd",
+      "kprop",
+      "kshell",
+      "kube-api",
+      "kube-apiserver",
+      "kube-control-plane",
+      "kube-control-plane-secure",
+      "kube-controller-manager",
+      "kube-controller-manager-secure",
+      "kube-nodeport-services",
+      "kube-scheduler",
+      "kube-scheduler-secure",
+      "kube-worker",
+      "kubelet",
+      "kubelet-readonly",
+      "kubelet-worker",
+      "ldap",
+      "ldaps",
+      "libvirt",
+      "libvirt-tls",
+      "lightning-network",
+      "llmnr",
+      "llmnr-client",
+      "llmnr-tcp",
+      "llmnr-udp",
+      "managesieve",
+      "matrix",
+      "mdns",
+      "memcache",
+      "minecraft",
+      "minidlna",
+      "mndp",
+      "mongodb",
+      "mosh",
+      "mountd",
+      "mpd",
+      "mqtt",
+      "mqtt-tls",
+      "ms-wbt",
+      "mssql",
+      "murmur",
+      "mysql",
+      "nbd",
+      "nebula",
+      "need-for-speed-most-wanted",
+      "netbios-ns",
+      "netdata-dashboard",
+      "nfs",
+      "nfs3",
+      "nmea-0183",
+      "nrpe",
+      "ntp",
+      "nut",
+      "opentelemetry",
+      "openvpn",
+      "ovirt-imageio",
+      "ovirt-storageconsole",
+      "ovirt-vmconsole",
+      "plex",
+      "pmcd",
+      "pmproxy",
+      "pmwebapi",
+      "pmwebapis",
+      "pop3",
+      "pop3s",
+      "postgresql",
+      "privoxy",
+      "prometheus",
+      "prometheus-node-exporter",
+      "proxy-dhcp",
+      "proxy-http",
+      "ps2link",
+      "ps3netsrv",
+      "ptp",
+      "pulseaudio",
+      "puppetmaster",
+      "quassel",
+      "radius",
+      "radsec",
+      "rdp",
+      "redis",
+      "redis-sentinel",
+      "rootd",
+      "rpc-bind",
+      "rquotad",
+      "rsh",
+      "rsyncd",
+      "rtsp",
+      "salt-master",
+      "samba",
+      "samba-client",
+      "samba-dc",
+      "sane",
+      "settlers-history-collection",
+      "sip",
+      "sips",
+      "slimevr",
+      "slp",
+      "smtp",
+      "smtp-submission",
+      "smtps",
+      "snmp",
+      "snmptls",
+      "snmptls-trap",
+      "snmptrap",
+      "socks",
+      "spideroak-lansync",
+      "spotify-sync",
+      "squid",
+      "ssdp",
+      "ssh",
+      "statsrv",
+      "steam-lan-transfer",
+      "steam-streaming",
+      "stellaris",
+      "stronghold-crusader",
+      "stun",
+      "stuns",
+      "submission",
+      "supertuxkart",
+      "svdrp",
+      "svn",
+      "syncthing",
+      "syncthing-gui",
+      "syncthing-relay",
+      "synergy",
+      "syscomlan",
+      "syslog",
+      "syslog-ng",
+      "syslog-tls",
+      "telnet",
+      "tentacle",
+      "terraria",
+      "tftp",
+      "tile38",
+      "tinc",
+      "tor-socks",
+      "transmission-client",
+      "turn",
+      "turns",
+      "upnp-client",
+      "vdsm",
+      "vnc-server",
+      "vrrp",
+      "warpinator",
+      "wbem-http",
+      "wbem-https",
+      "wireguard",
+      "ws-discovery",
+      "ws-discovery-client",
+      "ws-discovery-host",
+      "ws-discovery-tcp",
+      "ws-discovery-udp",
+      "wsman",
+      "wsmans",
+      "xdmcp",
+      "xmpp-bosh",
+      "xmpp-client",
+      "xmpp-local",
+      "xmpp-server",
+      "zabbix-agent",
+      "zabbix-java-gateway",
+      "zabbix-server",
+      "zabbix-trapper",
+      "zabbix-web-service",
+      "zero-k",
+      "zerotier"
+    ]
+  }
+}
