@@ -171,6 +171,9 @@ func TestAddPeerWithPSKChainsTwoConfirms(t *testing.T) {
 	a = model.(*app)
 	pub := "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE="
 	a = typeAndEnter(t, a, pub+" 192.0.2.7/32 psk")
+	// Skip the optional endpoint and keepalive.
+	a = enter(t, a)
+	a = enter(t, a)
 	if a.mode != modeConfirm || !strings.Contains(a.confirm.Command, "wg genpsk") {
 		t.Fatalf("step 1 preview = %q", a.confirm.Command)
 	}
@@ -223,5 +226,93 @@ func TestDownInterfaceCanBeBroughtBackUp(t *testing.T) {
 	a = reload(confirmAndRun(t, model.(*app)))
 	if dev, _ := a.selectedDevice(); !dev.Up || dev.ConfigOnly {
 		t.Errorf("u did not bring it back up: %+v", dev)
+	}
+}
+
+// TestAddPeerWithEndpointAndKeepalive: the two optional steps after the key
+// line end up on the previewed `wg set`, the keepalive step suggests 25 once
+// an endpoint is given, and the demo peer carries both afterwards.
+func TestAddPeerWithEndpointAndKeepalive(t *testing.T) {
+	a := newTestApp(t)
+	a.setScreen(wireguard.ScreenPeers)
+	model, _ := a.Update(key("a"))
+	a = model.(*app)
+	pub := "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE="
+	a = typeAndEnter(t, a, pub+" 192.0.2.7/32")
+	if a.mode != modeInput || a.inputPurpose != inputAddPeerEndpoint {
+		t.Fatalf("the endpoint step did not follow the key line (mode %d)", a.mode)
+	}
+
+	// A bad endpoint reopens the step with the value as typed and the reason.
+	a = typeAndEnter(t, a, "2001:db8::7:51820")
+	if a.mode != modeInput || a.inputPurpose != inputAddPeerEndpoint {
+		t.Fatal("a bad endpoint did not reopen its step")
+	}
+	if a.input.Value() != "2001:db8::7:51820" || !strings.Contains(a.input.Help, "✗") {
+		t.Errorf("retry lost the value or the reason: %q / %q", a.input.Value(), a.input.Help)
+	}
+	a = clearAndType(t, a, "vpn.example.com:51820")
+
+	if a.mode != modeInput || a.inputPurpose != inputAddPeerKeepalive {
+		t.Fatal("the keepalive step did not follow the endpoint")
+	}
+	if a.input.Value() != "25" {
+		t.Errorf("keepalive prefill = %q, want the NAT suggestion 25", a.input.Value())
+	}
+	a = clearAndType(t, a, "70000")
+	if a.mode != modeInput || a.inputPurpose != inputAddPeerKeepalive {
+		t.Fatal("an out-of-range keepalive did not reopen its step")
+	}
+	a = clearAndType(t, a, "25")
+
+	want := "wg set wg0 peer " + pub + " allowed-ips 192.0.2.7/32 endpoint vpn.example.com:51820 " +
+		"persistent-keepalive 25"
+	if a.mode != modeConfirm || !strings.Contains(a.confirm.Command, want) {
+		t.Fatalf("preview = %q, want it to contain %q", a.confirm.Command, want)
+	}
+	a = confirmAndRun(t, a)
+	state, _ := a.backend.Load(t.Context())
+	dev, _ := state.Device("wg0")
+	last := dev.Peers[len(dev.Peers)-1]
+	if last.Endpoint != "vpn.example.com:51820" || last.Keepalive != 25 {
+		t.Errorf("peer = %+v, want the endpoint and keepalive", last)
+	}
+	// Like any peer change, it is offered for saving.
+	if a.mode != modeConfirm || !strings.Contains(a.confirm.Command, "wg-quick save wg0") {
+		t.Errorf("no save offer after the add: %q", a.confirm.Command)
+	}
+}
+
+// TestAddPeerOptionalStepsLeftEmpty: submitting both optional steps empty adds
+// the peer without either token, instead of cancelling the form.
+func TestAddPeerOptionalStepsLeftEmpty(t *testing.T) {
+	a := newTestApp(t)
+	a.setScreen(wireguard.ScreenPeers)
+	model, _ := a.Update(key("a"))
+	a = model.(*app)
+	a = typeAndEnter(t, a, "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE= 192.0.2.7/32")
+	a = enter(t, a)
+	if a.input.Value() != "" {
+		t.Errorf("keepalive prefilled %q with no endpoint", a.input.Value())
+	}
+	a = enter(t, a)
+	if a.mode != modeConfirm {
+		t.Fatalf("no confirm after the optional steps (mode %d)", a.mode)
+	}
+	if strings.Contains(a.confirm.Command, "endpoint") || strings.Contains(a.confirm.Command, "keepalive") {
+		t.Errorf("unset optional fields reached the preview: %q", a.confirm.Command)
+	}
+}
+
+// TestAddPeerBadLineStopsBeforeTheOptionalSteps: a typo in the key line is
+// reported at once, not after two more questions.
+func TestAddPeerBadLineStopsBeforeTheOptionalSteps(t *testing.T) {
+	a := newTestApp(t)
+	a.setScreen(wireguard.ScreenPeers)
+	model, _ := a.Update(key("a"))
+	a = model.(*app)
+	a = typeAndEnter(t, a, "not-a-key 192.0.2.7/32")
+	if a.mode != modeBrowse || !strings.Contains(a.status, "public key") {
+		t.Errorf("mode %d, status %q: want the key error at once", a.mode, a.status)
 	}
 }

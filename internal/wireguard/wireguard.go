@@ -26,7 +26,10 @@ package wireguard
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/netip"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -221,23 +224,50 @@ func BuildRemovePeer(iface, publicKey string) (runner.Command, error) {
 	}, nil
 }
 
+// PeerSpec is everything the add-peer form collects about one peer. None of
+// it is secret: the peer is named by its PUBLIC key and a pre-shared key only
+// ever travels as the path of the root-only file that holds it.
+type PeerSpec struct {
+	// PublicKey identifies the peer.
+	PublicKey string
+	// AllowedIPs are the prefixes routed to the peer; at least one.
+	AllowedIPs []string
+	// PresharedKeyFile is the file wg reads a pre-shared key from, empty for
+	// none.
+	PresharedKeyFile string
+	// Endpoint is where to reach the peer, host:port or [v6]:port; empty
+	// leaves it unset, so the peer has to dial in first.
+	Endpoint string
+	// Keepalive is the persistent-keepalive interval in seconds; 0 leaves it
+	// off. A peer behind NAT usually wants 25.
+	Keepalive int
+}
+
+// MaxKeepalive is the largest persistent-keepalive interval wg accepts.
+const MaxKeepalive = 65535
+
+// SuggestedKeepalive is the interval the WireGuard docs suggest for a peer
+// behind NAT: short enough to keep a typical NAT mapping open.
+const SuggestedKeepalive = 25
+
 // BuildAddPeer assembles `wg set <iface> peer <public-key> allowed-ips <ips>`,
-// with an optional pre-shared key read from a file.
+// followed by the optional `endpoint <host:port>`, `persistent-keepalive <s>`
+// and `preshared-key <file>`.
 //
 // The peer is identified by its PUBLIC key. A pre-shared key, when given, is a
 // path to a file `wg` opens itself: it is never a value on the argv, so it can
 // never appear in the confirm dialog or in `ps`. A private key has no place in
 // this call at all, and the guard below refuses one if it is ever wired in by
 // mistake.
-func BuildAddPeer(iface, publicKey string, allowedIPs []string, presharedKeyFile string) (runner.Command, error) {
+func BuildAddPeer(iface string, spec PeerSpec) (runner.Command, error) {
 	if !ValidInterface(iface) {
 		return runner.Command{}, fmt.Errorf("not a valid interface name: %q", iface)
 	}
-	if !ValidPublicKey(publicKey) {
+	if !ValidPublicKey(spec.PublicKey) {
 		return runner.Command{}, fmt.Errorf("not a valid public key")
 	}
-	ips := make([]string, 0, len(allowedIPs))
-	for _, ip := range allowedIPs {
+	ips := make([]string, 0, len(spec.AllowedIPs))
+	for _, ip := range spec.AllowedIPs {
 		ip = strings.TrimSpace(ip)
 		if ip == "" {
 			continue
@@ -250,17 +280,94 @@ func BuildAddPeer(iface, publicKey string, allowedIPs []string, presharedKeyFile
 	if len(ips) == 0 {
 		return runner.Command{}, fmt.Errorf("a peer needs at least one allowed-ip")
 	}
-	argv := []string{"wg", "set", iface, "peer", publicKey, "allowed-ips", strings.Join(ips, ",")}
-	if presharedKeyFile != "" {
-		if strings.ContainsAny(presharedKeyFile, " \t\n") {
+	argv := []string{"wg", "set", iface, "peer", spec.PublicKey, "allowed-ips", strings.Join(ips, ",")}
+	if spec.Endpoint != "" {
+		if err := CheckEndpoint(spec.Endpoint); err != nil {
+			return runner.Command{}, err
+		}
+		argv = append(argv, "endpoint", spec.Endpoint)
+	}
+	if spec.Keepalive < 0 || spec.Keepalive > MaxKeepalive {
+		return runner.Command{}, fmt.Errorf("persistent keepalive must be 0-%d seconds, not %d",
+			MaxKeepalive, spec.Keepalive)
+	}
+	if spec.Keepalive > 0 {
+		argv = append(argv, "persistent-keepalive", strconv.Itoa(spec.Keepalive))
+	}
+	if spec.PresharedKeyFile != "" {
+		if strings.ContainsAny(spec.PresharedKeyFile, " \t\n") {
 			return runner.Command{}, fmt.Errorf("not a valid file path for the pre-shared key")
 		}
-		argv = append(argv, "preshared-key", presharedKeyFile)
+		argv = append(argv, "preshared-key", spec.PresharedKeyFile)
 	}
 	return runner.Command{
 		Argv:        argv,
 		Description: "Add peer to " + iface,
 	}, nil
+}
+
+// hostnamePattern is one DNS label: letters, digits and inner hyphens.
+var hostnamePattern = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
+
+// CheckEndpoint validates a peer endpoint the way wg reads one: host:port,
+// where the host is an IPv4 address or a DNS name, or [v6]:port with the IPv6
+// address in brackets. The port is 1-65535. Nothing that could become a
+// second argument or a flag gets through.
+func CheckEndpoint(s string) error {
+	bad := func(why string) error {
+		return fmt.Errorf("not a valid endpoint %q: %s (host:port or [v6]:port)", s, why)
+	}
+	if s == "" || strings.HasPrefix(s, "-") || strings.ContainsAny(s, " \t\n") {
+		return bad("empty or not one word")
+	}
+	host, port, err := net.SplitHostPort(s)
+	if err != nil {
+		return bad("no port, or an IPv6 address without brackets")
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return bad("the port must be 1-65535")
+	}
+	if strings.HasPrefix(s, "[") {
+		addr, err := netip.ParseAddr(host)
+		if err != nil || !addr.Is6() || addr.Zone() != "" {
+			return bad("brackets hold an IPv6 address")
+		}
+		return nil
+	}
+	if addr, err := netip.ParseAddr(host); err == nil {
+		if !addr.Is4() {
+			return bad("an IPv6 address goes in brackets")
+		}
+		return nil
+	}
+	if len(host) > 253 {
+		return bad("the host name is too long")
+	}
+	for _, label := range strings.Split(strings.TrimSuffix(host, "."), ".") {
+		if !hostnamePattern.MatchString(label) {
+			return bad("the host is neither an address nor a DNS name")
+		}
+	}
+	return nil
+}
+
+// ValidEndpoint reports whether s is a peer endpoint CheckEndpoint accepts.
+func ValidEndpoint(s string) bool { return CheckEndpoint(s) == nil }
+
+// ParseKeepalive reads the keepalive field of the add-peer form: empty or
+// "off" is 0 (off), otherwise a whole number of seconds in 0-65535.
+func ParseKeepalive(s string) (int, error) {
+	s = strings.TrimSpace(s)
+	if s == "" || strings.EqualFold(s, "off") {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 0 || n > MaxKeepalive {
+		return 0, fmt.Errorf("persistent keepalive must be 0-%d seconds (%d behind NAT), not %q",
+			MaxKeepalive, SuggestedKeepalive, s)
+	}
+	return n, nil
 }
 
 // ConfDir is where wg-quick looks for interface configurations.

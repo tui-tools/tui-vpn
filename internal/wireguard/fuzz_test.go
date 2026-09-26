@@ -3,6 +3,7 @@ package wireguard
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -114,21 +115,23 @@ func FuzzParseRoutes(f *testing.F) {
 	})
 }
 
-// FuzzBuildAddPeer feeds arbitrary keys and allowed-ips through the one builder
+// FuzzBuildAddPeer feeds arbitrary keys, allowed-ips, endpoints and keepalives
+// through the one builder
 // that takes both from outside. Whatever comes back is what the confirm dialog
 // will show and the runner will execute, so the shape has to hold for every
 // input: a failure returns nothing runnable, and a success carries the key as a
 // single argument and never a private-key token.
 func FuzzBuildAddPeer(f *testing.F) {
-	f.Add("wg0", testPub, "192.0.2.5/32")
-	f.Add("wg0", "not-a-key", "x")
-	f.Add("", "", "")
-	f.Add("wg0", testPub, "192.0.2.5/32,2001:db8::5/128")
-	f.Add("wg0", testPub, "--flag")
-	f.Add("wg0", testPub, "a b\tc")
+	f.Add("wg0", testPub, "192.0.2.5/32", "", 0)
+	f.Add("wg0", "not-a-key", "x", "x", -1)
+	f.Add("", "", "", "", 0)
+	f.Add("wg0", testPub, "192.0.2.5/32,2001:db8::5/128", "[2001:db8::1]:51820", 25)
+	f.Add("wg0", testPub, "--flag", "--endpoint", 70000)
+	f.Add("wg0", testPub, "a b\tc", "vpn.example.com:51820 persistent-keepalive", 25)
 
-	f.Fuzz(func(t *testing.T, iface, key, ips string) {
-		cmd, err := BuildAddPeer(iface, key, strings.Split(ips, ","), "")
+	f.Fuzz(func(t *testing.T, iface, key, ips, endpoint string, keepalive int) {
+		cmd, err := BuildAddPeer(iface, PeerSpec{PublicKey: key,
+			AllowedIPs: strings.Split(ips, ","), Endpoint: endpoint, Keepalive: keepalive})
 		if err != nil {
 			if len(cmd.Argv) != 0 {
 				t.Fatalf("failed with a non-empty command: %+v", cmd)
@@ -144,6 +147,14 @@ func FuzzBuildAddPeer(f *testing.F) {
 		for _, tok := range cmd.Argv {
 			if strings.Contains(tok, "private-key") {
 				t.Fatalf("built a command with a private-key token: %q", cmd.Argv)
+			}
+		}
+		// An endpoint is one argument, right after its token, and never a flag.
+		if endpoint != "" {
+			i := slices.Index(cmd.Argv, "endpoint")
+			if i < 0 || cmd.Argv[i+1] != endpoint || strings.HasPrefix(endpoint, "-") ||
+				strings.ContainsAny(endpoint, " \t\n") {
+				t.Fatalf("endpoint %q not carried as one safe argument: %q", endpoint, cmd.Argv)
 			}
 		}
 	})
