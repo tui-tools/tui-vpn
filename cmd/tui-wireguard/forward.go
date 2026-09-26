@@ -75,12 +75,15 @@ func (a *app) askEgress(value string, problem error) {
 // wizardTookEgress validates the egress and opens the keygen.
 func (a *app) wizardTookEgress(value string) tea.Cmd {
 	a.draft.forward.Egress = value
-	a.draft.forward.Manager, a.draft.forward.EgressZone = "", ""
+	a.draft.forward.Manager, a.draft.forward.EgressZone, a.draft.forward.BindZone = "", "", ""
 	if fwd := a.state.Firewalld; fwd.Running {
 		// firewalld is in charge of forwarding: an iptables FORWARD accept
 		// would be overruled by its own forward chain (issue #30).
 		a.draft.forward.Manager = wireguard.ManagerFirewalld
 		a.draft.forward.EgressZone = fwd.ZoneOf(value)
+		if fwd.BoundZone(a.draft.name) == "" {
+			a.draft.forward.BindZone = fwd.DefaultZone()
+		}
 	}
 	if err := a.draft.forward.Validate(); err != nil {
 		a.askEgress(value, err)
@@ -107,7 +110,8 @@ func forwardExplanation(name string, f wireguard.ForwardSpec) string {
 			"own forward chain, so PostUp builds the firewalld policy " + policy + " instead. " +
 			"It forwards from the peers' network (ingress ANY, matched by source) to zone " +
 			f.EgressZone + " (" + f.Egress + "'s zone) and masquerades it there; the return " +
-			"path is firewalld's own established/related accept. PostUp also turns on " +
+			"path is firewalld's own established/related accept. " + bindText(name, f) +
+			"PostUp also turns on " +
 			"net.ipv4.ip_forward (left on at down). Policies exist only in firewalld's " +
 			"permanent configuration, so PostUp and PostDown end in firewall-cmd --reload, " +
 			"which also drops any runtime-only firewalld change made without --permanent. " +
@@ -118,6 +122,17 @@ func forwardExplanation(name string, f wireguard.ForwardSpec) string {
 		"rules with -I — a FORWARD chain that ends in REJECT would never reach an appended " +
 		"rule — accepts the return path by connection tracking only, and masquerades the " +
 		"peers behind " + f.Egress + ". PostDown removes the rules."
+}
+
+// bindText explains the zone binding of the WireGuard interface, when PostUp
+// makes one.
+func bindText(name string, f wireguard.ForwardSpec) string {
+	if f.BindZone == "" {
+		return ""
+	}
+	return name + " is bound to zone " + f.BindZone + ", the zone it falls into anyway, so " +
+		"firewalld has an interface to dispatch the policy on (with both ends in the default " +
+		"zone's catch-all it applies no policy); PostDown unbinds it. "
 }
 
 // firewalldForwarder reports that the interface being created is a

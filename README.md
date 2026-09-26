@@ -84,6 +84,7 @@ The FORWARD rules are inserted (`-I`): the provider's Ubuntu image ends its FORW
 ```ini
 PostUp = sysctl -w net.ipv4.ip_forward=1
 PostUp = firewall-cmd --permanent --delete-policy=wg0-fwd >/dev/null 2>&1 || true
+PostUp = firewall-cmd --permanent --zone=public --add-interface=wg0
 PostUp = firewall-cmd --permanent --new-policy=wg0-fwd
 PostUp = firewall-cmd --permanent --policy=wg0-fwd --add-ingress-zone=ANY
 PostUp = firewall-cmd --permanent --policy=wg0-fwd --add-egress-zone=public
@@ -91,12 +92,14 @@ PostUp = firewall-cmd --permanent --policy=wg0-fwd --add-rich-rule='rule family=
 PostUp = firewall-cmd --permanent --policy=wg0-fwd --add-rich-rule='rule family="ipv4" source address="10.8.0.0/24" destination address="10.0.0.0/16" masquerade'
 PostUp = firewall-cmd --reload
 PostDown = firewall-cmd --permanent --delete-policy=wg0-fwd
+PostDown = firewall-cmd --permanent --zone=public --remove-interface=wg0
 PostDown = firewall-cmd --reload
 ```
 
 - The egress zone is the zone firewalld puts the egress NIC in (its bound zone, else the default zone), read when the wizard runs. Ingress is `ANY` and the rules match the peers' network as the source, so the WireGuard interface stays in whatever zone it falls into and the peers' access to the host itself does not change.
+- When the WireGuard interface is not bound to a zone yet, PostUp binds it to the zone it falls into anyway (the default zone) and PostDown unbinds it. That changes nothing for its traffic, but firewalld dispatches a policy only on an interface it knows: with both the WireGuard interface and the egress NIC in the default zone's catch-all (an egress NIC NetworkManager did not bind, such as a second NIC or a veth) it generates no forward rule for the policy at all, and the packet meets the zone's reject.
 - Accept and masquerade are rich rules scoped to the peers' network and each destination network, so nothing else that crosses into that zone is accepted or rewritten, and no shared zone setting (such as the zone's own masquerade) is touched. The return path is firewalld's own established/related accept.
-- Policies exist only in firewalld's permanent configuration, so the lines are `--permanent` and end in `firewall-cmd --reload`. A reload drops runtime-only firewalld changes made without `--permanent`; the dialog says so. The first line removes a policy left behind by a crash while the interface was up, so `up` never fails on it. `PostDown` deletes the policy, which takes its rules with it, and reloads: after `down` firewalld is back to what it was.
+- Policies exist only in firewalld's permanent configuration, so the lines are `--permanent` and end in `firewall-cmd --reload`. A reload drops runtime-only firewalld changes made without `--permanent`; the dialog says so. The first line removes a policy left behind by a crash while the interface was up, so `up` never fails on it. `PostDown` deletes the policy, which takes its rules with it, and reloads: after `down` firewalld's running and permanent configuration is back to what it was (firewalld itself keeps a `.xml.old` backup of each file it rewrote under `/etc/firewalld`).
 - For the same reason the listen-port step on such a host is `firewall-cmd --permanent --add-port=<port>/udp`: a runtime-only port would be dropped by the reload at `up`. It takes effect at that reload and stays after `down`.
 
 ufw hosts and hosts with a plain nftables or iptables ruleset keep the iptables rules above.
@@ -106,7 +109,7 @@ ufw hosts and hosts with a plain nftables or iptables ruleset keep the iptables 
 The interfaces screen shows both answers for every interface, read from the live firewall (as root):
 
 - **UDP IN** is `open`, `closed` or `?` for the listen port. It is read from [tui-firewall](https://tui.tools/tools/tui-firewall/)'s `--check` when tui-firewall is installed (it knows ufw, firewalld, nftables and iptables), else from `nft -j list ruleset`, else from `iptables -S`. Jumps and gotos are followed into user chains (ufw's, docker's, firewalld's zones), rules that only some senders match are ignored, and a firewalld zone counts when it is the default zone or an interface is bound to it. Where the answer cannot be told (a jump into a chain that was not read, a firewalld service whose ports are not known), it is `?`, never `closed`.
-- **FORWARD** is whether the host forwards traffic in on the interface. When firewalld is running it is read from firewalld itself (`firewall-cmd --list-all-policies` and `--list-all-zones`, the running configuration): `yes` when an active policy whose ingress is `ANY` or the interface's zone, and whose egress is not only the host, accepts by its target or by a rich rule. An iptables FORWARD accept on such a host does not count, since firewalld overrules it. Everywhere else it is whether the iptables FORWARD chain accepts traffic in on the interface: where a forwarding server's PostUp puts its rules.
+- **FORWARD** is whether the host forwards traffic in on the interface. When firewalld is running it is read from firewalld itself (`firewall-cmd --list-all-policies` and `--list-all-zones`, the running configuration): `yes` when an active policy whose ingress is `ANY` or the interface's zone, and whose egress is not only the host, accepts by its target or by a rich rule (a rich rule scoped to a source address counts only in the interface's own `<interface>-fwd` policy, since the source is what ties it to one interface's peers). Disabled policies (Fedora ships five `gateway-*` policies disabled) do not count. An iptables FORWARD accept on such a host does not count, since firewalld overrules it. Everywhere else it is whether the iptables FORWARD chain accepts traffic in on the interface: where a forwarding server's PostUp puts its rules.
 
 ### Persist peer changes (`w`)
 

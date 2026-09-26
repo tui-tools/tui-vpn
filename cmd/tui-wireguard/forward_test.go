@@ -283,12 +283,14 @@ func TestForwardingServerOnFirewalld(t *testing.T) {
 	a = enter(t, a) // the proposed networks
 	a = enter(t, a) // the proposed egress, eth0
 	if a.draft.forward == nil || a.draft.forward.Manager != wireguard.ManagerFirewalld ||
-		a.draft.forward.EgressZone != "public" {
+		a.draft.forward.EgressZone != "public" || a.draft.forward.BindZone != "public" {
 		t.Fatalf("draft = %+v, want firewalld forwarding to public", a.draft.forward)
 	}
 	a = confirmAndRun(t, a) // the keygen
 	body := a.confirm.Body
 	for _, want := range []string{
+		"PostUp = firewall-cmd --permanent --zone=public --add-interface=wg9",
+		"PostDown = firewall-cmd --permanent --zone=public --remove-interface=wg9",
 		"PostUp = firewall-cmd --permanent --new-policy=wg9-fwd",
 		"PostUp = firewall-cmd --permanent --policy=wg9-fwd --add-egress-zone=public",
 		`source address="192.0.2.128/25" destination address="198.51.100.0/24" masquerade'`,

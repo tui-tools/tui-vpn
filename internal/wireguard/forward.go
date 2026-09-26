@@ -95,6 +95,10 @@ type ForwardSpec struct {
 	// the egress NIC in, which the policy forwards to.
 	Manager    string
 	EgressZone string
+	// BindZone is set when the WireGuard interface is not bound to a
+	// firewalld zone: the zone it falls into, which PostUp binds it to so
+	// firewalld has an interface to dispatch the policy on.
+	BindZone string
 }
 
 // SplitList reads a human-typed list, separated by commas or spaces, into
@@ -171,7 +175,7 @@ func ForwardingRules(iface, address string, spec ForwardSpec) (up, down []string
 		dests = []string{""}
 	}
 	if spec.Manager == ManagerFirewalld {
-		return firewalldForwardingRules(iface, peers, spec.EgressZone, dests)
+		return firewalldForwardingRules(iface, peers, spec.EgressZone, spec.BindZone, dests)
 	}
 
 	var rules []string

@@ -73,6 +73,10 @@ func TestFirewalldForwards(t *testing.T) {
 	if got := stock.ZoneOf("ens3"); got != "public" {
 		t.Errorf("ZoneOf(ens3) = %q", got)
 	}
+	if stock.BoundZone("wg0") != "" || stock.BoundZone("ens3") != "public" || stock.DefaultZone() != "public" {
+		t.Errorf("bound wg0 %q, ens3 %q, default %q", stock.BoundZone("wg0"), stock.BoundZone("ens3"),
+			stock.DefaultZone())
+	}
 
 	fwd := firewalldFixture(t, "firewalld-policies-forwarding.txt")
 	if !fwd.Forwards("wg0") {
@@ -94,6 +98,18 @@ func TestFirewalldForwards(t *testing.T) {
 	accept.Zones = append(accept.Zones, FirewalldZone{Name: "trusted", Interfaces: []string{"wg0"}})
 	if !accept.Forwards("wg0") {
 		t.Error("wg0 bound to trusted matches trusted-out")
+	}
+}
+
+// TestFirewalldDisabledPolicy: firewalld 2.x lists "disable: yes" for a
+// policy that is kept but not applied; it forwards nothing.
+func TestFirewalldDisabledPolicy(t *testing.T) {
+	listing := strings.Replace(readFixture(t, "firewalld-policies-forwarding.txt"),
+		"wg0-fwd (active)\n", "wg0-fwd (active)\n  disable: yes\n", 1)
+	fw := Firewalld{Running: true, Zones: ParseFirewalldZones(readFixture(t, "firewalld-zones.txt")),
+		Policies: ParseFirewalldPolicies(listing)}
+	if !fw.Policies[1].Disabled || fw.Forwards("wg0") {
+		t.Errorf("a disabled policy forwards: %+v", fw.Policies[1])
 	}
 }
 
@@ -128,6 +144,27 @@ func TestFirewalldForwardingRules(t *testing.T) {
 	wantDown := []string{"firewall-cmd --permanent --delete-policy=wg0-fwd", "firewall-cmd --reload"}
 	if !reflect.DeepEqual(down, wantDown) {
 		t.Errorf("down = %q", down)
+	}
+
+	// An interface no zone claims is bound to the zone it falls into, so
+	// firewalld has an interface to dispatch the policy on, and unbound at
+	// down.
+	bound := spec
+	bound.BindZone = "public"
+	up2, down2, err := ForwardingRules("wg0", "198.51.100.1/24", bound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(up2) != len(up)+1 || up2[2] != "firewall-cmd --permanent --zone=public --add-interface=wg0" {
+		t.Errorf("bound up =\n%s", strings.Join(up2, "\n"))
+	}
+	if !reflect.DeepEqual(down2, []string{"firewall-cmd --permanent --delete-policy=wg0-fwd",
+		"firewall-cmd --permanent --zone=public --remove-interface=wg0", "firewall-cmd --reload"}) {
+		t.Errorf("bound down = %q", down2)
+	}
+	bound.BindZone = "public --panic-on"
+	if _, _, err := ForwardingRules("wg0", "198.51.100.1/24", bound); err == nil {
+		t.Error("a bind zone that is not a plain name was accepted")
 	}
 	for _, line := range up {
 		if strings.Contains(line, "iptables") {
@@ -219,5 +256,51 @@ func TestForwardSourceAndManager(t *testing.T) {
 	s.annotateFirewall()
 	if s.Devices[0].Forwarding {
 		t.Error("an iptables FORWARD accept is overruled by firewalld: not forwarding")
+	}
+}
+
+// TestFirewalldCapturedFedora44 reads firewalld 2.4.4's own listings, captured
+// on Fedora 44 before and while a forwarding server built by this tool was
+// up (issue #30). Fedora ships five gateway-* policies disabled, some with
+// target ACCEPT: none of them may count as forwarding.
+func TestFirewalldCapturedFedora44(t *testing.T) {
+	stock := ParseFirewalldPolicies(readFixture(t, "firewalld-f44-policies-stock.txt"))
+	if len(stock) != 6 {
+		t.Fatalf("stock policies = %d, want 6", len(stock))
+	}
+	disabled := 0
+	for _, p := range stock {
+		if p.Disabled {
+			disabled++
+		}
+	}
+	if disabled != 5 {
+		t.Errorf("disabled stock policies = %d, want 5", disabled)
+	}
+	zones := ParseFirewalldZones(readFixture(t, "firewalld-f44-zones-forwarding.txt"))
+	fw := Firewalld{Running: true, Zones: zones, Policies: stock}
+	if fw.Forwards("wg0") {
+		t.Error("stock Fedora 44 policies forward wg0")
+	}
+	// Even bound to trusted, which the disabled gateway-lan-to-world
+	// accepts from, nothing forwards while that policy is disabled.
+	trusted := Firewalld{Running: true, Policies: stock, Zones: []FirewalldZone{
+		{Name: "trusted", Interfaces: []string{"wg0"}}, {Name: "public", Default: true}}}
+	if trusted.Forwards("wg0") {
+		t.Error("a disabled gateway policy counted as forwarding")
+	}
+
+	up := Firewalld{Running: true, Zones: zones,
+		Policies: ParseFirewalldPolicies(readFixture(t, "firewalld-f44-policies-forwarding.txt"))}
+	if up.BoundZone("wg0") != "public" || up.DefaultZone() != "public" {
+		t.Errorf("wg0 bound to %q, default %q", up.BoundZone("wg0"), up.DefaultZone())
+	}
+	if !up.Forwards("wg0") {
+		t.Error("the captured wg0-fwd policy does not read as forwarding")
+	}
+	// Another WireGuard interface on the same host is not forwarded by
+	// wg0's policy: its rules match wg0's peers only.
+	if up.Forwards("wg1") {
+		t.Error("wg0-fwd's source-scoped rules counted for wg1")
 	}
 }

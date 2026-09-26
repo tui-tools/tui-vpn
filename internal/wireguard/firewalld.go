@@ -55,6 +55,10 @@ type FirewalldPolicy struct {
 	Egress     []string
 	Masquerade bool
 	RichRules  []string
+	// Disabled is firewalld 2.x's "disable: yes", listed as "(disabled)"
+	// in the header: the policy is kept but not applied. Fedora 44 ships
+	// five gateway-* policies that way.
+	Disabled bool
 }
 
 // firewalldBlock is one object of a firewall-cmd listing: the header line
@@ -150,6 +154,7 @@ func ParseFirewalldPolicies(out string) []FirewalldPolicy {
 			Egress:     strings.Fields(b.fields["egress-zones"]),
 			Masquerade: b.fields["masquerade"] == "yes",
 			RichRules:  b.rich,
+			Disabled:   b.fields["disable"] == "yes" || b.flags["disabled"],
 		})
 	}
 	return policies
@@ -158,24 +163,41 @@ func ParseFirewalldPolicies(out string) []FirewalldPolicy {
 // ZoneOf is the zone firewalld puts an interface in: the zone it is bound
 // to, else the default zone, which takes every interface no zone claims.
 func (f Firewalld) ZoneOf(iface string) string {
-	def := ""
+	if zone := f.BoundZone(iface); zone != "" {
+		return zone
+	}
+	return f.DefaultZone()
+}
+
+// BoundZone is the zone an interface is explicitly bound to, empty when it
+// only falls into the default zone.
+func (f Firewalld) BoundZone(iface string) string {
 	for _, z := range f.Zones {
-		for _, i := range z.Interfaces {
-			if i == iface {
-				return z.Name
-			}
-		}
-		if z.Default {
-			def = z.Name
+		if contains(z.Interfaces, iface) {
+			return z.Name
 		}
 	}
-	return def
+	return ""
+}
+
+// DefaultZone is the zone that takes every interface no zone claims.
+func (f Firewalld) DefaultZone() string {
+	for _, z := range f.Zones {
+		if z.Default {
+			return z.Name
+		}
+	}
+	return ""
 }
 
 // Forwards reports whether firewalld forwards traffic that comes in on
 // iface to somewhere other than this host: an active policy whose ingress is
 // ANY or iface's zone, whose egress is not only HOST, and which accepts:
-// by its target, or by an accept rich rule. A zone's intra-zone forwarding
+// by its target, or by an accept rich rule. A rich rule scoped to a source
+// address counts only in the interface's own policy (<iface>-fwd): with
+// ingress ANY, the source is what ties such a rule to one interface's peers,
+// and the source is not something this read can map back to an interface.
+// A zone's intra-zone forwarding
 // ("forward: yes") is not counted: it only joins interfaces of one zone, and
 // on its own it neither masquerades nor reaches another zone.
 func (f Firewalld) Forwards(iface string) bool {
@@ -185,7 +207,7 @@ func (f Firewalld) Forwards(iface string) bool {
 	zone := f.ZoneOf(iface)
 	for _, p := range f.Policies {
 		fromIface := contains(p.Ingress, "ANY") || (zone != "" && contains(p.Ingress, zone))
-		if !p.Active || !fromIface {
+		if !p.Active || p.Disabled || !fromIface {
 			continue
 		}
 		outward := false
@@ -200,8 +222,11 @@ func (f Firewalld) Forwards(iface string) bool {
 		if p.Target == "ACCEPT" {
 			return true
 		}
+		own, _ := FirewalldPolicyName(iface)
 		for _, r := range p.RichRules {
-			if richAction(r) == "accept" {
+			// A rule scoped to a source cannot be told apart from another
+			// interface's peers unless the policy is this interface's own.
+			if richAction(r) == "accept" && (p.Name == own || !strings.Contains(r, "source ")) {
 				return true
 			}
 		}
@@ -251,23 +276,30 @@ func FirewalldPolicyName(iface string) (string, error) {
 // firewalldForwardingRules is ForwardingRules on a firewalld host. It builds
 // one policy owned by the interface:
 //
-//   - ingress ANY, egress the zone of the egress NIC: firewalld matches a
-//     policy by zones, and the WireGuard interface is left in whatever zone
-//     it falls into, so the peers' input rules do not change. What makes the
-//     policy the interface's own is its rich rules, which match the peers'
-//     network as the source.
+//   - ingress ANY, egress the zone of the egress NIC. What makes the policy
+//     the interface's own is its rich rules, which match the peers' network
+//     as the source, so the peers' access to the host itself does not change.
 //   - one accept and one masquerade rich rule per destination network (or
 //     one of each for any destination), scoped to the peers' source network,
 //     so nothing else that crosses into that zone is accepted or rewritten.
 //   - the return path needs nothing: firewalld accepts established and
 //     related traffic before any policy.
+//   - when the WireGuard interface is not bound to a zone yet (bindZone is
+//     the zone it falls into, the default zone), it is bound to that same
+//     zone, which changes nothing for its traffic but gives firewalld an
+//     interface to dispatch the policy on: with both ends in the default
+//     zone's catch-all, firewalld generates no forward dispatch for the
+//     policy at all, and the packet meets the zone's reject. That is the
+//     case of an egress NIC NetworkManager did not bind (a second NIC, a
+//     veth), found in a container stand-in for the lab.
 //
 // Policies are permanent-only objects in firewalld, so every line is
 // --permanent and the last one is a --reload. PostUp first deletes a
 // leftover policy of the same name (a crash while the interface was up
 // leaves it in the permanent configuration), so up never fails on it;
-// PostDown deletes the policy, which takes its rules with it, and reloads.
-func firewalldForwardingRules(iface, peers, egressZone string, dests []string) (up, down []string, err error) {
+// PostDown deletes the policy, which takes its rules with it, unbinds the
+// interface when PostUp bound it, and reloads.
+func firewalldForwardingRules(iface, peers, egressZone, bindZone string, dests []string) (up, down []string, err error) {
 	policy, err := FirewalldPolicyName(iface)
 	if err != nil {
 		return nil, nil, err
@@ -275,14 +307,22 @@ func firewalldForwardingRules(iface, peers, egressZone string, dests []string) (
 	if egressZone == "" || !ValidInterface(egressZone) {
 		return nil, nil, fmt.Errorf("not a valid firewalld zone for the egress interface: %q", egressZone)
 	}
+	if bindZone != "" && !ValidInterface(bindZone) {
+		return nil, nil, fmt.Errorf("not a valid firewalld zone for %s: %q", iface, bindZone)
+	}
 	fc := "firewall-cmd --permanent"
 	up = []string{
 		"sysctl -w net.ipv4.ip_forward=1",
 		fc + " --delete-policy=" + policy + " >/dev/null 2>&1 || true",
-		fc + " --new-policy=" + policy,
-		fc + " --policy=" + policy + " --add-ingress-zone=ANY",
-		fc + " --policy=" + policy + " --add-egress-zone=" + egressZone,
 	}
+	if bindZone != "" {
+		up = append(up, fc+" --zone="+bindZone+" --add-interface="+iface)
+	}
+	up = append(up,
+		fc+" --new-policy="+policy,
+		fc+" --policy="+policy+" --add-ingress-zone=ANY",
+		fc+" --policy="+policy+" --add-egress-zone="+egressZone,
+	)
 	for _, action := range []string{"accept", "masquerade"} {
 		for _, dst := range dests {
 			rule := `rule family="ipv4" source address="` + peers + `"`
@@ -293,7 +333,11 @@ func firewalldForwardingRules(iface, peers, egressZone string, dests []string) (
 		}
 	}
 	up = append(up, "firewall-cmd --reload")
-	down = []string{fc + " --delete-policy=" + policy, "firewall-cmd --reload"}
+	down = []string{fc + " --delete-policy=" + policy}
+	if bindZone != "" {
+		down = append(down, fc+" --zone="+bindZone+" --remove-interface="+iface)
+	}
+	down = append(down, "firewall-cmd --reload")
 	return up, down, nil
 }
 
