@@ -102,7 +102,7 @@ func forwardExplanation(f wireguard.ForwardSpec) string {
 
 // portVerdictFor is what the host firewall does with a handshake to port.
 func (a *app) portVerdictFor(port int) wireguard.Verdict {
-	return a.state.Firewall.UDPPortVerdict(port)
+	return a.state.Input.UDPVerdict(port)
 }
 
 // needsPortStep reports whether the wizard offers to open the listen port:
@@ -126,27 +126,50 @@ func (a *app) wizardSteps() int {
 // it is named as the way to make it permanent; it has no non-interactive
 // mode, so this tool does not drive it.
 func (a *app) confirmOpenPort(name string, port int) tea.Cmd {
-	open, err := wireguard.BuildOpenListenPort(port)
+	input := a.state.Input
+	open, err := wireguard.BuildOpenListenPortFor(input.Manager, port)
 	lines := []string{fmt.Sprintf("Step 3 of %d (optional) — open udp/%d, or no handshake "+
 		"reaches %s.", a.wizardSteps(), port, name)}
-	switch a.portVerdictFor(port) {
-	case wireguard.VerdictUnknown:
+	switch {
+	case a.portVerdictFor(port) == wireguard.VerdictUnknown && input.Source == "":
 		lines = append(lines, "The host firewall could not be read ("+
-			orDash(a.state.Firewall.Error)+"), so this is offered in case it is closed.")
+			orDash(input.Error)+"), so this is offered in case it is closed.")
+	case a.portVerdictFor(port) == wireguard.VerdictUnknown:
+		lines = append(lines, fmt.Sprintf("The host firewall (read from %s) has rules this "+
+			"tool cannot judge for udp/%d, so this is offered in case it is closed.",
+			input.Source, port))
+	case input.Manager == wireguard.ManagerFirewalld:
+		lines = append(lines, fmt.Sprintf("firewalld does not allow udp/%d now (%s, read "+
+			"from %s). It rejects in its own nftables table whatever its zones do not "+
+			"allow, so the port is added to the running zone with firewall-cmd.",
+			port, a.portVerdictFor(port), input.Source))
 	default:
-		lines = append(lines, fmt.Sprintf("The host firewall's INPUT chain does not accept "+
-			"udp/%d now (%s). Cloud images often end INPUT in a REJECT rule — the "+
+		lines = append(lines, fmt.Sprintf("The host firewall does not accept udp/%d now "+
+			"(%s, read from %s). Cloud images often end INPUT in a REJECT rule — the "+
 			"provider's Ubuntu image on Oracle Cloud does — so the port stays closed even "+
 			"with the cloud's own security list open; -I puts this rule above that REJECT.",
-			port, a.portVerdictFor(port)))
+			port, a.portVerdictFor(port), input.Source))
 	}
-	lines = append(lines, "This rule is NOT persisted: it is gone at the next reboot or "+
-		"firewall reload.")
-	if a.state.TUIFirewall {
+	if input.Manager == wireguard.ManagerFirewalld {
+		lines = append(lines, "This is NOT persisted: it is gone at the next reboot or "+
+			"firewall-cmd --reload.")
+	} else {
+		lines = append(lines, "This rule is NOT persisted: it is gone at the next reboot or "+
+			"firewall reload.")
+	}
+	switch {
+	case a.state.TUIFirewall:
 		lines = append(lines, "tui-firewall is installed: open udp/"+strconv.Itoa(port)+
 			" there to make it permanent (it has no non-interactive mode, so this tool does "+
 			"not drive it).")
-	} else {
+	case input.Manager == wireguard.ManagerFirewalld:
+		lines = append(lines, "To keep it, run the same with --permanent as well "+
+			"(firewall-cmd --permanent --add-port="+strconv.Itoa(port)+"/udp), or install "+
+			"tui-firewall and open the port there.")
+	case input.Manager == wireguard.ManagerUFW:
+		lines = append(lines, "To keep it, allow it in ufw (ufw allow "+strconv.Itoa(port)+
+			"/udp), or install tui-firewall and open the port there.")
+	default:
 		lines = append(lines, "To keep it, save the ruleset (netfilter-persistent save), or "+
 			"install tui-firewall and open the port there.")
 	}

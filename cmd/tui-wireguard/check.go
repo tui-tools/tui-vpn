@@ -35,9 +35,14 @@ type checkReport struct {
 type wgSummary struct {
 	Available bool   `json:"available"`
 	Error     string `json:"error,omitempty"`
-	// FirewallChecked reports that the host firewall (`iptables -S`) was
-	// read; without root it is not, and every listenPortInput is "unknown".
+	// FirewallChecked reports that the host firewall's input side was read;
+	// without root it is not, and every listenPortInput is "unknown".
+	// FirewallSource says what answered: tui-firewall (its --check),
+	// nftables (`nft -j list ruleset`) or iptables (`iptables -S`).
+	// FirewallManager is firewalld or ufw when one was recognised.
 	FirewallChecked bool           `json:"firewallChecked"`
+	FirewallSource  string         `json:"firewallSource,omitempty"`
+	FirewallManager string         `json:"firewallManager,omitempty"`
 	Interfaces      []ifaceSummary `json:"interfaces"`
 }
 
@@ -52,9 +57,9 @@ type ifaceSummary struct {
 	ConfigOnly bool          `json:"configOnly,omitempty"`
 	PeerCount  int           `json:"peerCount"`
 	Peers      []peerSummary `json:"peers"`
-	// ListenPortInput is what the host's INPUT chain does with a handshake
-	// to the listen port: accept, reject, drop, or unknown when the ruleset
-	// could not be read.
+	// ListenPortInput is what the host firewall does with a handshake to
+	// the listen port: accept, reject, drop, or unknown when the firewall
+	// could not be read or its rules could not be judged.
 	ListenPortInput wireguard.Verdict `json:"listenPortInput"`
 	// Forwarding is whether the host's FORWARD chain accepts traffic in on
 	// this interface: a forwarding server.
@@ -100,7 +105,8 @@ func runCheck(ctx context.Context, backend wireguard.Backend,
 func summariseWG(state wireguard.State) wgSummary {
 	now := time.Now()
 	summary := wgSummary{Available: state.WGAvailable, Error: state.WGError,
-		FirewallChecked: state.Firewall.Checked}
+		FirewallChecked: state.Input.Source != "", FirewallSource: state.Input.Source,
+		FirewallManager: state.Input.Manager}
 	for _, dev := range state.Devices {
 		verdict := dev.PortVerdict
 		if verdict == "" {

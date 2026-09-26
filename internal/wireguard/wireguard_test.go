@@ -50,7 +50,7 @@ func TestBuildPeerCommands(t *testing.T) {
 		t.Errorf("remove argv = %q", rm.Argv)
 	}
 
-	add, err := BuildAddPeer("wg0", testPub, []string{"192.0.2.5/32", "2001:db8::5/128"}, "")
+	add, err := BuildAddPeer("wg0", PeerSpec{PublicKey: testPub, AllowedIPs: []string{"192.0.2.5/32", "2001:db8::5/128"}})
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
@@ -61,13 +61,13 @@ func TestBuildPeerCommands(t *testing.T) {
 }
 
 func TestBuildAddPeerRejectsBadInput(t *testing.T) {
-	if _, err := BuildAddPeer("wg0", "not-a-key", []string{"192.0.2.5/32"}, ""); err == nil {
+	if _, err := BuildAddPeer("wg0", PeerSpec{PublicKey: "not-a-key", AllowedIPs: []string{"192.0.2.5/32"}}); err == nil {
 		t.Error("accepted an invalid public key")
 	}
-	if _, err := BuildAddPeer("wg0", testPub, nil, ""); err == nil {
+	if _, err := BuildAddPeer("wg0", PeerSpec{PublicKey: testPub}); err == nil {
 		t.Error("a peer with no allowed-ips should be rejected")
 	}
-	if _, err := BuildAddPeer("wg0", testPub, []string{"192.0.2.5/32; rm -rf"}, ""); err == nil {
+	if _, err := BuildAddPeer("wg0", PeerSpec{PublicKey: testPub, AllowedIPs: []string{"192.0.2.5/32; rm -rf"}}); err == nil {
 		t.Error("accepted an allowed-ip that is not an address")
 	}
 }
@@ -77,7 +77,8 @@ func TestBuildAddPeerRejectsBadInput(t *testing.T) {
 // value on the command line, so it can never appear in the confirm dialog or in
 // ps. The path is the last argument, after the "preshared-key" token.
 func TestPresharedKeyIsAFilePathNotAValue(t *testing.T) {
-	add, err := BuildAddPeer("wg0", testPub, []string{"192.0.2.5/32"}, "/run/tui-wireguard/psk")
+	add, err := BuildAddPeer("wg0", PeerSpec{PublicKey: testPub, AllowedIPs: []string{"192.0.2.5/32"},
+		PresharedKeyFile: "/run/tui-wireguard/psk"})
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
@@ -103,7 +104,8 @@ func TestNoBuilderEmitsAPrivateKey(t *testing.T) {
 		{"down", func() ([]string, error) { c, e := BuildInterfaceDown("wg0"); return c.Argv, e }},
 		{"remove", func() ([]string, error) { c, e := BuildRemovePeer("wg0", testPub); return c.Argv, e }},
 		{"add", func() ([]string, error) {
-			c, e := BuildAddPeer("wg0", testPub, []string{"192.0.2.5/32"}, "/run/psk")
+			c, e := BuildAddPeer("wg0", PeerSpec{PublicKey: testPub, AllowedIPs: []string{"192.0.2.5/32"},
+				PresharedKeyFile: "/run/psk", Endpoint: "vpn.example.com:51820", Keepalive: 25})
 			return c.Argv, e
 		}},
 	}
@@ -159,5 +161,77 @@ func TestConfiguredInterfacesAreListed(t *testing.T) {
 	}
 	if devices[1].Name != "wg1" || !devices[1].ConfigOnly || devices[1].Up {
 		t.Errorf("wg1 should be listed down and config-only: %+v", devices[1])
+	}
+}
+
+// TestBuildAddPeerEndpointAndKeepalive: both optional fields land on the one
+// `wg set` line, each after its own token, and are left off when unset.
+func TestBuildAddPeerEndpointAndKeepalive(t *testing.T) {
+	add, err := BuildAddPeer("wg0", PeerSpec{PublicKey: testPub,
+		AllowedIPs: []string{"192.0.2.5/32"}, Endpoint: "198.51.100.7:51820", Keepalive: 25})
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	want := []string{"wg", "set", "wg0", "peer", testPub, "allowed-ips", "192.0.2.5/32",
+		"endpoint", "198.51.100.7:51820", "persistent-keepalive", "25"}
+	if !reflect.DeepEqual(add.Argv, want) {
+		t.Errorf("add argv = %q, want %q", add.Argv, want)
+	}
+
+	add, err = BuildAddPeer("wg0", PeerSpec{PublicKey: testPub,
+		AllowedIPs: []string{"192.0.2.5/32"}, Endpoint: "[2001:db8::7]:51820"})
+	if err != nil {
+		t.Fatalf("add v6: %v", err)
+	}
+	if indexOf(add.Argv, "persistent-keepalive") >= 0 {
+		t.Errorf("keepalive 0 should leave the token off: %q", add.Argv)
+	}
+
+	for _, ka := range []int{-1, 65536} {
+		if _, err := BuildAddPeer("wg0", PeerSpec{PublicKey: testPub,
+			AllowedIPs: []string{"192.0.2.5/32"}, Keepalive: ka}); err == nil {
+			t.Errorf("accepted keepalive %d", ka)
+		}
+	}
+	if _, err := BuildAddPeer("wg0", PeerSpec{PublicKey: testPub,
+		AllowedIPs: []string{"192.0.2.5/32"}, Endpoint: "198.51.100.7"}); err == nil {
+		t.Error("accepted an endpoint with no port")
+	}
+}
+
+func TestCheckEndpoint(t *testing.T) {
+	good := []string{
+		"198.51.100.7:51820", "[2001:db8::7]:51820", "vpn.example.com:51820",
+		"host:1", "example.com.:65535", "a-b.example:443",
+	}
+	for _, s := range good {
+		if err := CheckEndpoint(s); err != nil {
+			t.Errorf("%q rejected: %v", s, err)
+		}
+	}
+	bad := []string{
+		"", "198.51.100.7", "198.51.100.7:0", "198.51.100.7:65536", "198.51.100.7:port",
+		"2001:db8::7:51820", "2001:db8::7", "[198.51.100.7]:51820", "[vpn.example.com]:1",
+		"[fe80::1%eth0]:51820", "-x:1", "--endpoint:51820", "a b:1", "host;rm:1",
+		"-host.example:1", "under_score.example:1", "[::1]:", ":51820", "x.-y:1",
+	}
+	for _, s := range bad {
+		if err := CheckEndpoint(s); err == nil {
+			t.Errorf("%q accepted", s)
+		}
+	}
+}
+
+func TestParseKeepalive(t *testing.T) {
+	for in, want := range map[string]int{"": 0, "off": 0, "0": 0, "25": 25, " 25 ": 25, "65535": 65535} {
+		got, err := ParseKeepalive(in)
+		if err != nil || got != want {
+			t.Errorf("ParseKeepalive(%q) = %d, %v; want %d", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"-1", "65536", "25s", "x"} {
+		if _, err := ParseKeepalive(in); err == nil {
+			t.Errorf("ParseKeepalive(%q) accepted", in)
+		}
 	}
 }

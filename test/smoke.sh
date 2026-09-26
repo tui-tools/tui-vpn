@@ -104,6 +104,10 @@ check "check --demo says the demo interface's port is accepted" \
   "$bin --demo --check" \
   '"listenPortInput": "accept"'
 
+check "check --demo carries the demo peer's persistent keepalive" \
+  "$bin --demo --check" \
+  '"keepaliveSeconds": 25'
+
 check "check --demo says the demo interface forwards" \
   "$bin --demo --check" \
   '"forwarding": true'
@@ -112,6 +116,31 @@ if command -v iptables >/dev/null 2>&1 && sudo -n iptables -S >/dev/null 2>&1; t
   check "check read the host firewall" \
     "sudo -n $bin --check" \
     '"firewallChecked": true'
+  # The listen port is read from the firewall in charge: tui-firewall when
+  # it is installed, else the nftables rule set, else iptables (issue #28).
+  check "check names what answered for the host firewall" \
+    "sudo -n $bin --check" \
+    '"firewallSource": "(tui-firewall|nftables|iptables)"'
+fi
+
+# firewalld keeps its rules in its own nftables table, which iptables never
+# lists: the verdict for each listen port has to agree with firewalld's own
+# answer for the default zone.
+if systemctl is-active --quiet firewalld 2>/dev/null && command -v wg >/dev/null 2>&1 &&
+  sudo -n wg show interfaces >/dev/null 2>&1; then
+  check "check recognises firewalld" \
+    "sudo -n $bin --check" \
+    '"firewallManager": "firewalld"'
+  for iface in $(sudo -n wg show interfaces); do
+    port=$(sudo -n wg show "$iface" listen-port)
+    want='"listenPortInput":"(reject|drop|unknown)"'
+    if sudo -n firewall-cmd --query-port="$port/udp" >/dev/null 2>&1; then
+      want='"listenPortInput":"accept"'
+    fi
+    check "check agrees with firewalld about udp/$port on $iface" \
+      "sudo -n $bin --check | tr -d ' \n' | sed 's/\"name\":/\n&/g' | grep '^\"name\":\"$iface\"' | grep -oE '\"listenPortInput\":\"[a-z]+\"' || true" \
+      "$want"
+  done
 fi
 
 # The whole promise, on the real read path: --check goes into public issues,
@@ -143,6 +172,12 @@ if command -v wg >/dev/null 2>&1 && sudo -n wg show interfaces >/dev/null 2>&1; 
         "$conf"
     fi
   done
+  # A peer added with a persistent keepalive (issue #27) carries it: as many
+  # peers with one in --check as wg lists with one.
+  keepalives=$(sudo -n wg show all persistent-keepalive | awk '$3 != "off"' | grep -c . || true)
+  check "check counts the peers with a persistent keepalive ($keepalives)" \
+    "sudo -n $bin --check | grep -cE '\"keepaliveSeconds\": [1-9]' || true" \
+    "^${keepalives}\$"
   for iface in $(sudo -n wg show interfaces); do
     port=$(sudo -n wg show "$iface" listen-port)
     peers=$(sudo -n wg show "$iface" peers | grep -c . || true)

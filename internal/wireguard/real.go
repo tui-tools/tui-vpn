@@ -25,9 +25,17 @@ var searchPaths = map[string][]string{
 	// interface that is down is still on screen to be brought up.
 	"ls":      {"/usr/bin/ls", "/bin/ls"},
 	"install": {"/usr/bin/install", "/bin/install"},
-	// iptables reads the host firewall (is a listen port open, does the host
-	// forward for an interface) and opens a listen port when asked.
+	// iptables reads the host firewall (does the host forward for an
+	// interface, and is a listen port open when nothing better answers) and
+	// opens a listen port when asked.
 	"iptables": iptablesSearchPaths,
+	// Whether a listen port is open is read from tui-firewall's --check
+	// first, which knows ufw, firewalld, nftables and iptables, then from
+	// the nftables rule set (issue #28). Both are reads only.
+	"tui-firewall": TUIFirewallSearchPaths,
+	"nft":          {"/usr/sbin/nft", "/usr/bin/nft", "/sbin/nft"},
+	// firewall-cmd opens a listen port on a firewalld host, when asked.
+	"firewall-cmd": {"/usr/bin/firewall-cmd", "/bin/firewall-cmd"},
 }
 
 // privilegedRead marks the binaries whose reads need root. Reading a WireGuard
@@ -40,6 +48,9 @@ var privilegedRead = map[string]bool{
 	// Reading the ruleset needs root: unprivileged, iptables refuses with
 	// "you must be root".
 	"iptables": true,
+	// Rule sets are root's to read, whoever reads them.
+	"tui-firewall": true,
+	"nft":          true,
 }
 
 // installHints tell a user what to install when a binary is missing.
@@ -192,15 +203,78 @@ func (r *Real) loadHostNet(ctx context.Context, state *State) {
 			state.Routes, _ = ParseRoutes([]byte(out))
 		}
 	}
+	iptablesOut := ""
 	if run, err := r.runnerFor("iptables"); err != nil {
 		state.Firewall = Firewall{Error: runner.FirstLine(err.Error())}
 	} else if out, err := run.Read(ctx, "iptables", "-S"); err != nil {
 		state.Firewall = Firewall{Error: runner.FirstLine(err.Error())}
 	} else {
 		state.Firewall = ParseIptablesRules(out)
+		iptablesOut = out
 	}
 	state.TUIFirewall = runner.Available("tui-firewall", TUIFirewallSearchPaths...)
+	state.Input = r.readInput(ctx, state.TUIFirewall, iptablesOut, state.Firewall.Error)
 	state.annotateFirewall()
+}
+
+// readInput reads the host firewall's input side for the listen-port
+// verdicts: tui-firewall's own --check when it is installed, then the
+// nftables rule set, then the iptables filter table already read. Every read
+// escalates, since rule sets are root's to read, and none of them changes
+// anything. When none answers, the verdicts are unknown, never open.
+func (r *Real) readInput(ctx context.Context, tuiFirewall bool, iptablesOut,
+	iptablesErr string) InputFirewall {
+	if tuiFirewall {
+		// Installed since it was last looked for: the miss the runner cache
+		// remembers is stale.
+		r.forget("tui-firewall")
+	}
+	lastErr := iptablesErr
+	legacy, legacyOK := ParseIptablesInput(iptablesOut)
+	reads := []struct {
+		bin   string
+		argv  []string
+		parse func(string) (InputFirewall, bool)
+	}{
+		{"tui-firewall", []string{"tui-firewall", "--check"}, ParseTuiFirewallCheck},
+		{"nft", []string{"nft", "-j", "list", "ruleset"}, ParseNftRuleset},
+	}
+	for _, read := range reads {
+		if read.bin == "tui-firewall" && !tuiFirewall {
+			continue
+		}
+		run, err := r.runnerFor(read.bin)
+		if err != nil {
+			continue
+		}
+		out, err := run.Read(ctx, read.argv...)
+		if err != nil {
+			lastErr = runner.FirstLine(err.Error())
+			continue
+		}
+		fw, ok := read.parse(out)
+		if !ok {
+			continue
+		}
+		if fw.unhooked && legacyOK {
+			// No input hook in nftables: whatever filters input is
+			// iptables-legacy, which nft does not list.
+			return legacy
+		}
+		return fw
+	}
+	if legacyOK {
+		return legacy
+	}
+	return InputFirewall{Error: lastErr}
+}
+
+// forget drops a cached miss, so the next runnerFor looks for the binary
+// again.
+func (r *Real) forget(bin string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.missing, bin)
 }
 
 // annotateLinks corrects each device's Up flag from `ip link`, a read no

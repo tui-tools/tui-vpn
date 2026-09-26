@@ -3,6 +3,7 @@ package wireguard
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -86,13 +87,50 @@ func FuzzParseIptablesRules(f *testing.F) {
 	f.Add("-N a\n-A INPUT -j a\n-A a -j INPUT\n")
 	f.Fuzz(func(t *testing.T, out string) {
 		fw := ParseIptablesRules(out)
-		switch v := fw.UDPPortVerdict(51820); v {
+		_ = fw.Forwards("wg0")
+		input, _ := ParseIptablesInput(out)
+		assertVerdict(t, input)
+	})
+}
+
+// FuzzParseNftRuleset feeds arbitrary JSON to the nftables reader, whose
+// verdict for a port decides the UDP IN column and the wizard's port step:
+// for any input it has to be one of the four verdicts, and following jumps
+// has to terminate.
+func FuzzParseNftRuleset(f *testing.F) {
+	seedFrom(f, "nft-")
+	f.Add(`{"nftables":[{"chain":{"family":"inet","table":"t","name":"in","hook":"input",` +
+		`"type":"filter","policy":"drop"}},{"chain":{"family":"inet","table":"t","name":"a"}},` +
+		`{"rule":{"family":"inet","table":"t","chain":"in","expr":[{"jump":{"target":"a"}}]}},` +
+		`{"rule":{"family":"inet","table":"t","chain":"a","expr":[{"jump":{"target":"a"}}]}}]}`)
+	f.Fuzz(func(t *testing.T, out string) {
+		fw, _ := ParseNftRuleset(out)
+		assertVerdict(t, fw)
+	})
+}
+
+// FuzzParseTuiFirewallCheck feeds arbitrary JSON to the reader of
+// tui-firewall's --check, the first source the listen-port verdict is read
+// from.
+func FuzzParseTuiFirewallCheck(f *testing.F) {
+	seedFrom(f, "tui-firewall-")
+	f.Fuzz(func(t *testing.T, out string) {
+		fw, _ := ParseTuiFirewallCheck(out)
+		assertVerdict(t, fw)
+	})
+}
+
+// assertVerdict checks that a read firewall answers one of the four verdicts
+// for a few ports, the edges of the range included.
+func assertVerdict(t *testing.T, fw InputFirewall) {
+	t.Helper()
+	for _, port := range []int{0, 1, 51820, 65535} {
+		switch v := fw.UDPVerdict(port); v {
 		case VerdictAccept, VerdictReject, VerdictDrop, VerdictUnknown:
 		default:
-			t.Fatalf("verdict %q is not one of the four", v)
+			t.Fatalf("udp/%d: verdict %q is not one of the four", port, v)
 		}
-		_ = fw.Forwards("wg0")
-	})
+	}
 }
 
 // FuzzParseRoutes feeds arbitrary JSON to the route parser, whose answer
@@ -114,21 +152,23 @@ func FuzzParseRoutes(f *testing.F) {
 	})
 }
 
-// FuzzBuildAddPeer feeds arbitrary keys and allowed-ips through the one builder
+// FuzzBuildAddPeer feeds arbitrary keys, allowed-ips, endpoints and keepalives
+// through the one builder
 // that takes both from outside. Whatever comes back is what the confirm dialog
 // will show and the runner will execute, so the shape has to hold for every
 // input: a failure returns nothing runnable, and a success carries the key as a
 // single argument and never a private-key token.
 func FuzzBuildAddPeer(f *testing.F) {
-	f.Add("wg0", testPub, "192.0.2.5/32")
-	f.Add("wg0", "not-a-key", "x")
-	f.Add("", "", "")
-	f.Add("wg0", testPub, "192.0.2.5/32,2001:db8::5/128")
-	f.Add("wg0", testPub, "--flag")
-	f.Add("wg0", testPub, "a b\tc")
+	f.Add("wg0", testPub, "192.0.2.5/32", "", 0)
+	f.Add("wg0", "not-a-key", "x", "x", -1)
+	f.Add("", "", "", "", 0)
+	f.Add("wg0", testPub, "192.0.2.5/32,2001:db8::5/128", "[2001:db8::1]:51820", 25)
+	f.Add("wg0", testPub, "--flag", "--endpoint", 70000)
+	f.Add("wg0", testPub, "a b\tc", "vpn.example.com:51820 persistent-keepalive", 25)
 
-	f.Fuzz(func(t *testing.T, iface, key, ips string) {
-		cmd, err := BuildAddPeer(iface, key, strings.Split(ips, ","), "")
+	f.Fuzz(func(t *testing.T, iface, key, ips, endpoint string, keepalive int) {
+		cmd, err := BuildAddPeer(iface, PeerSpec{PublicKey: key,
+			AllowedIPs: strings.Split(ips, ","), Endpoint: endpoint, Keepalive: keepalive})
 		if err != nil {
 			if len(cmd.Argv) != 0 {
 				t.Fatalf("failed with a non-empty command: %+v", cmd)
@@ -144,6 +184,14 @@ func FuzzBuildAddPeer(f *testing.F) {
 		for _, tok := range cmd.Argv {
 			if strings.Contains(tok, "private-key") {
 				t.Fatalf("built a command with a private-key token: %q", cmd.Argv)
+			}
+		}
+		// An endpoint is one argument, right after its token, and never a flag.
+		if endpoint != "" {
+			i := slices.Index(cmd.Argv, "endpoint")
+			if i < 0 || cmd.Argv[i+1] != endpoint || strings.HasPrefix(endpoint, "-") ||
+				strings.ContainsAny(endpoint, " \t\n") {
+				t.Fatalf("endpoint %q not carried as one safe argument: %q", endpoint, cmd.Argv)
 			}
 		}
 	})

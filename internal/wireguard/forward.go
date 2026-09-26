@@ -207,6 +207,26 @@ func BuildOpenListenPort(port int) (runner.Command, error) {
 	}, nil
 }
 
+// BuildOpenListenPortFor is BuildOpenListenPort for the firewall manager the
+// input read recognised. firewalld rejects in its own nftables table whatever
+// its zones do not allow, before or after iptables' INPUT chain, so a port
+// there is opened with `firewall-cmd --add-port`, in the running
+// configuration only, like the iptables rule. Any other host gets the
+// iptables rule.
+func BuildOpenListenPortFor(manager string, port int) (runner.Command, error) {
+	if manager != ManagerFirewalld {
+		return BuildOpenListenPort(port)
+	}
+	if port < 1 || port > 65535 {
+		return runner.Command{}, fmt.Errorf("not a valid listen port: %d", port)
+	}
+	p := strconv.Itoa(port)
+	return runner.Command{
+		Argv:        []string{"firewall-cmd", "--add-port=" + p + "/udp"},
+		Description: "Open udp/" + p + " in firewalld (until reload)",
+	}, nil
+}
+
 // TUIFirewallSearchPaths are where tui-firewall is installed by its packages
 // and by `make install`.
 var TUIFirewallSearchPaths = []string{"/usr/bin/tui-firewall", "/usr/local/bin/tui-firewall"}

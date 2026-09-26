@@ -3,6 +3,7 @@ package wireguard
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -89,6 +90,7 @@ func (f *Fake) Load(_ context.Context) (State, error) {
 	state := f.state
 	state.Devices = append([]Device(nil), f.state.Devices...)
 	state.Firewall = ParseIptablesRules(strings.Join(f.firewall, "\n"))
+	state.Input, _ = ParseIptablesInput(strings.Join(f.firewall, "\n")) // the demo always reads
 	state.annotateFirewall()
 	return state, nil
 }
@@ -111,7 +113,13 @@ func (f *Fake) apply(cmd runner.Command) (string, error) {
 	case len(argv) >= 6 && argv[0] == "wg" && argv[1] == "set" && argv[3] == "peer" && argv[5] == "remove":
 		return f.removePeer(argv[2], argv[4])
 	case len(argv) >= 7 && argv[0] == "wg" && argv[1] == "set" && argv[3] == "peer" && argv[5] == "allowed-ips":
-		return f.addPeer(argv[2], argv[4], strings.Split(argv[6], ","), hasToken(argv, "preshared-key"))
+		return f.addPeer(argv[2], Peer{
+			PublicKey:       argv[4],
+			AllowedIPs:      strings.Split(argv[6], ","),
+			HasPresharedKey: hasToken(argv, "preshared-key"),
+			Endpoint:        tokenValue(argv, "endpoint"),
+			Keepalive:       atoiOr0(tokenValue(argv, "persistent-keepalive")),
+		})
 	case len(argv) == 3 && argv[0] == "sh" && argv[1] == "-c" && strings.Contains(argv[2], "wg genkey"):
 		// The keygen shell: the demo "writes" the private key nowhere and
 		// answers with the invented public key, exactly the value the real
@@ -137,6 +145,23 @@ func hasToken(argv []string, token string) bool {
 		}
 	}
 	return false
+}
+
+// tokenValue is the argument that follows a literal token in argv, empty when
+// the token is absent or last.
+func tokenValue(argv []string, token string) string {
+	for i, a := range argv[:max(len(argv)-1, 0)] {
+		if a == token {
+			return argv[i+1]
+		}
+	}
+	return ""
+}
+
+// atoiOr0 is strconv.Atoi for a value a builder already validated.
+func atoiOr0(s string) int {
+	n, _ := strconv.Atoi(s) // 0 on an absent value is the right default
+	return n
 }
 
 // demoFirewall is the demo host's `iptables -S`: the shape of a cloud
@@ -252,14 +277,19 @@ func (f *Fake) removePeer(iface, key string) (string, error) {
 	return "", fmt.Errorf("no such peer on %s", iface)
 }
 
-func (f *Fake) addPeer(iface, key string, ips []string, withPSK bool) (string, error) {
+// addPeer applies `wg set … peer`. Like wg, it replaces the peer when the key
+// is already there rather than adding it twice.
+func (f *Fake) addPeer(iface string, peer Peer) (string, error) {
 	for i := range f.state.Devices {
 		if f.state.Devices[i].Name == iface {
-			f.state.Devices[i].Peers = append(f.state.Devices[i].Peers, Peer{
-				PublicKey:       key,
-				AllowedIPs:      ips,
-				HasPresharedKey: withPSK,
-			})
+			peers := f.state.Devices[i].Peers
+			for j := range peers {
+				if peers[j].PublicKey == peer.PublicKey {
+					peers[j] = peer
+					return "", nil
+				}
+			}
+			f.state.Devices[i].Peers = append(peers, peer)
 			return "", nil
 		}
 	}

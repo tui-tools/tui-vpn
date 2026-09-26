@@ -287,8 +287,8 @@ func TestFakeAddPeerWithPSKMarksIt(t *testing.T) {
 	if _, err := f.Run(ctx, psk); err != nil {
 		t.Fatalf("genpsk: %v", err)
 	}
-	add, err := BuildAddPeer("wg0", "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE=",
-		[]string{"192.0.2.7/32"}, PSKPath("wg0", testPub))
+	add, err := BuildAddPeer("wg0", PeerSpec{PublicKey: "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE=",
+		AllowedIPs: []string{"192.0.2.7/32"}, PresharedKeyFile: PSKPath("wg0", testPub)})
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -300,5 +300,27 @@ func TestFakeAddPeerWithPSKMarksIt(t *testing.T) {
 	last := dev.Peers[len(dev.Peers)-1]
 	if !last.HasPresharedKey {
 		t.Error("a peer added with a preshared-key file should report one")
+	}
+}
+
+// TestFakeAddPeerRecordsEndpointAndKeepalive: the demo applies the optional
+// fields the way wg would, so the peers screen shows them after an add.
+func TestFakeAddPeerRecordsEndpointAndKeepalive(t *testing.T) {
+	ctx := context.Background()
+	f := NewFake()
+	pub := "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE="
+	add, err := BuildAddPeer("wg0", PeerSpec{PublicKey: pub, AllowedIPs: []string{"192.0.2.7/32"},
+		Endpoint: "198.51.100.7:51820", Keepalive: 25})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := f.Run(ctx, add); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	state, _ := f.Load(ctx)
+	dev, _ := state.Device("wg0")
+	last := dev.Peers[len(dev.Peers)-1]
+	if last.PublicKey != pub || last.Endpoint != "198.51.100.7:51820" || last.Keepalive != 25 {
+		t.Errorf("peer = %+v, want the endpoint and keepalive applied", last)
 	}
 }

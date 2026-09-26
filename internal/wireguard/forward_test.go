@@ -13,13 +13,14 @@ import (
 // security list open, and FORWARD ends in REJECT too.
 func TestCloudImageFirewall(t *testing.T) {
 	fw := ParseIptablesRules(readFixture(t, "iptables-cloud-image.txt"))
+	input := iptablesInput(t, readFixture(t, "iptables-cloud-image.txt"))
 	for port, want := range map[int]Verdict{
 		51820: VerdictReject, // the interface's port: the finding
 		41641: VerdictAccept, // opened by a udp rule above the REJECT
 		22:    VerdictReject, // tcp only
 		443:   VerdictReject, // tcp only
 	} {
-		if got := fw.UDPPortVerdict(port); got != want {
+		if got := input.UDPVerdict(port); got != want {
 			t.Errorf("udp/%d = %s, want %s", port, got, want)
 		}
 	}
@@ -38,7 +39,7 @@ func TestCloudImageFirewall(t *testing.T) {
 	if err := f.iptables(cmd.Argv[1:]); err != nil {
 		t.Fatal(err)
 	}
-	if got := ParseIptablesRules(strings.Join(f.firewall, "\n")).UDPPortVerdict(51820); got != VerdictAccept {
+	if got := iptablesInput(t, strings.Join(f.firewall, "\n")).UDPVerdict(51820); got != VerdictAccept {
 		t.Errorf("after the insert udp/51820 = %s", got)
 	}
 }
@@ -46,7 +47,10 @@ func TestCloudImageFirewall(t *testing.T) {
 // TestUFWFirewall follows jumps into user chains, and does not count a rule
 // that only some senders match.
 func TestUFWFirewall(t *testing.T) {
-	fw := ParseIptablesRules(readFixture(t, "iptables-ufw.txt"))
+	fw := iptablesInput(t, readFixture(t, "iptables-ufw.txt"))
+	if fw.Manager != ManagerUFW {
+		t.Errorf("manager = %q, want ufw from its chains", fw.Manager)
+	}
 	for port, want := range map[int]Verdict{
 		51820: VerdictAccept,
 		60500: VerdictAccept, // a multiport range
@@ -56,11 +60,11 @@ func TestUFWFirewall(t *testing.T) {
 		1234:  VerdictDrop,   // the policy
 		137:   VerdictDrop,   // RETURN, then the policy
 	} {
-		if got := fw.UDPPortVerdict(port); got != want {
+		if got := fw.UDPVerdict(port); got != want {
 			t.Errorf("udp/%d = %s, want %s", port, got, want)
 		}
 	}
-	if got := (Firewall{}).UDPPortVerdict(51820); got != VerdictUnknown {
+	if got := (InputFirewall{}).UDPVerdict(51820); got != VerdictUnknown {
 		t.Errorf("an unread firewall = %s, want unknown", got)
 	}
 }
