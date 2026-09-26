@@ -89,6 +89,16 @@ func hasFlag(flags []string, want string) bool {
 type ForwardSpec struct {
 	Networks []string
 	Egress   string
+	// Manager is ManagerFirewalld when firewalld was running when the
+	// interface was created: its rules are then a firewalld policy instead
+	// of iptables rules (issue #30). EgressZone is the zone firewalld puts
+	// the egress NIC in, which the policy forwards to.
+	Manager    string
+	EgressZone string
+	// BindZone is set when the WireGuard interface is not bound to a
+	// firewalld zone: the zone it falls into, which PostUp binds it to so
+	// firewalld has an interface to dispatch the policy on.
+	BindZone string
 }
 
 // SplitList reads a human-typed list, separated by commas or spaces, into
@@ -147,22 +157,28 @@ func (f ForwardSpec) Validate() error {
 //     the host can open a connection towards the peers.
 //   - MASQUERADE makes the traffic leave with the host's own address, so the
 //     networks behind need no route back to the peers.
-func ForwardingRules(address string, spec ForwardSpec) (up, down []string, err error) {
+//
+// On a firewalld host (spec.Manager) the same intent is a firewalld policy
+// instead: see firewalldForwardingRules. iface names that policy.
+func ForwardingRules(iface, address string, spec ForwardSpec) (up, down []string, err error) {
 	if err := spec.Validate(); err != nil {
 		return nil, nil, err
 	}
-	own, err := netip.ParsePrefix(address)
-	if err != nil || !own.Addr().Is4() {
-		return nil, nil, fmt.Errorf("forwarding needs an IPv4 interface address, got %q", address)
+	peers, err := peersNetwork(address)
+	if err != nil {
+		return nil, nil, err
 	}
-	peers := own.Masked().String()
 	egress := spec.Egress
 
-	var rules []string
 	dests := spec.Networks
 	if len(dests) == 0 {
 		dests = []string{""}
 	}
+	if spec.Manager == ManagerFirewalld {
+		return firewalldForwardingRules(iface, peers, spec.EgressZone, spec.BindZone, dests)
+	}
+
+	var rules []string
 	for _, dst := range dests {
 		d := ""
 		if dst != "" {
@@ -224,6 +240,21 @@ func BuildOpenListenPortFor(manager string, port int) (runner.Command, error) {
 	return runner.Command{
 		Argv:        []string{"firewall-cmd", "--add-port=" + p + "/udp"},
 		Description: "Open udp/" + p + " in firewalld (until reload)",
+	}, nil
+}
+
+// BuildOpenListenPortPermanent opens a listen port in firewalld's permanent
+// configuration only. It is the port step of a forwarding server on a
+// firewalld host: that interface's PostUp ends in `firewall-cmd --reload`,
+// which drops runtime-only changes, and applies this one.
+func BuildOpenListenPortPermanent(port int) (runner.Command, error) {
+	if port < 1 || port > 65535 {
+		return runner.Command{}, fmt.Errorf("not a valid listen port: %d", port)
+	}
+	p := strconv.Itoa(port)
+	return runner.Command{
+		Argv:        []string{"firewall-cmd", "--permanent", "--add-port=" + p + "/udp"},
+		Description: "Open udp/" + p + " in firewalld's permanent configuration (active at the next reload)",
 	}, nil
 }
 

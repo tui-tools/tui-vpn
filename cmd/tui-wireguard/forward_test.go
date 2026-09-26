@@ -253,3 +253,138 @@ func TestUDPInColumnReadsFirewalld(t *testing.T) {
 		}
 	}
 }
+
+// runningFirewalld is a firewalld host read from the zone and policy
+// fixtures: default zone public holding eth0, and no forwarding policy.
+func runningFirewalld(t *testing.T) wireguard.Firewalld {
+	t.Helper()
+	read := func(name string) string {
+		data, err := os.ReadFile(filepath.Join("..", "..", "internal", "wireguard", "testdata", name)) //nolint:gosec // testdata is in the repository
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.ReplaceAll(string(data), "interfaces: ens3", "interfaces: eth0")
+	}
+	return wireguard.Firewalld{Running: true,
+		Zones:    wireguard.ParseFirewalldZones(read("firewalld-zones.txt")),
+		Policies: wireguard.ParseFirewalldPolicies(read("firewalld-policies-default.txt"))}
+}
+
+// TestForwardingServerOnFirewalld is issue #30: with firewalld running, the
+// forwarding server's conf builds a firewalld policy forwarding to the egress
+// NIC's zone instead of iptables rules, and the port step goes into
+// firewalld's permanent configuration, since PostUp's reload would drop a
+// runtime-only port.
+func TestForwardingServerOnFirewalld(t *testing.T) {
+	a := newTestApp(t)
+	a.state.Firewalld = unboundEgress(runningFirewalld(t))
+	a.state.Input = firewalldInput(t, "nft-firewalld-closed.json")
+	a = startForwardingServer(t, a, "51821")
+	a = enter(t, a) // the proposed networks
+	a = enter(t, a) // the proposed egress, eth0
+	if a.draft.forward == nil || a.draft.forward.Manager != wireguard.ManagerFirewalld ||
+		a.draft.forward.EgressZone != "public" || a.draft.forward.BindZone != "public" {
+		t.Fatalf("draft = %+v, want firewalld forwarding to public", a.draft.forward)
+	}
+	a = confirmAndRun(t, a) // the keygen
+	body := a.confirm.Body
+	for _, want := range []string{
+		"PostUp = firewall-cmd --permanent --zone=public --add-interface=wg9",
+		"PostDown = firewall-cmd --permanent --zone=public --remove-interface=wg9",
+		"PostUp = firewall-cmd --permanent --new-policy=wg9-fwd",
+		"PostUp = firewall-cmd --permanent --policy=wg9-fwd --add-egress-zone=public",
+		`source address="192.0.2.128/25" destination address="198.51.100.0/24" masquerade'`,
+		"PostUp = firewall-cmd --reload",
+		"PostDown = firewall-cmd --permanent --delete-policy=wg9-fwd",
+		"firewalld is in charge",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("conf preview lacks %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "iptables -I") {
+		t.Errorf("conf preview inserts iptables rules on a firewalld host:\n%s", body)
+	}
+	a.state.Firewalld = unboundEgress(runningFirewalld(t))
+	a.state.Input = firewalldInput(t, "nft-firewalld-closed.json")
+	a = confirmAndRun(t, a) // write the conf
+	if !strings.Contains(a.confirm.Command, "firewall-cmd --permanent --add-port=51821/udp") {
+		t.Errorf("port step preview = %q, want the permanent firewall-cmd", a.confirm.Command)
+	}
+	if !strings.Contains(a.confirm.Body, "permanent configuration") {
+		t.Errorf("the port step does not say why it is permanent:\n%s", a.confirm.Body)
+	}
+}
+
+// TestForwardingServerWithoutFirewalld keeps today's rules on a host where
+// firewalld is not running (ufw, plain iptables or nftables).
+func TestForwardingServerWithoutFirewalld(t *testing.T) {
+	a := newTestApp(t)
+	a = startForwardingServer(t, a, "51821")
+	a = enter(t, a)
+	a = enter(t, a)
+	if a.draft.forward.Manager != "" {
+		t.Fatalf("manager = %q without firewalld", a.draft.forward.Manager)
+	}
+	a = confirmAndRun(t, a)
+	if !strings.Contains(a.confirm.Body, "PostUp = iptables -I FORWARD -i %i -o eth0") ||
+		strings.Contains(a.confirm.Body, "firewall-cmd") {
+		t.Errorf("conf preview without firewalld:\n%s", a.confirm.Body)
+	}
+}
+
+// TestCheckReportsForwardingSource: --check says what answered for the
+// FORWARD column.
+func TestCheckReportsForwardingSource(t *testing.T) {
+	var out strings.Builder
+	if err := runCheck(context.Background(), wireguard.NewFake(), nil, &out); err != nil {
+		t.Fatal(err)
+	}
+	var report checkReport
+	if err := json.Unmarshal([]byte(out.String()), &report); err != nil {
+		t.Fatal(err)
+	}
+	wg := report.WireGuard
+	if !wg.ForwardingChecked || wg.ForwardingSource != wireguard.ForwardSourceIptables || wg.ForwardingManager != "" {
+		t.Errorf("forwarding = %v %q %q, want the demo's iptables", wg.ForwardingChecked,
+			wg.ForwardingSource, wg.ForwardingManager)
+	}
+}
+
+// TestForwardingServerOnFirewalldBoundEgress: when the egress NIC is bound to
+// a zone (NetworkManager binds the NICs it manages), firewalld dispatches the
+// policy on it and the WireGuard interface is left alone.
+func TestForwardingServerOnFirewalldBoundEgress(t *testing.T) {
+	a := newTestApp(t)
+	a.state.Firewalld = unboundEgress(runningFirewalld(t))
+	a = startForwardingServer(t, a, "51821")
+	a = enter(t, a)
+	a = enter(t, a)
+	if a.draft.forward.BindZone != "public" {
+		t.Fatalf("unbound egress: bind zone = %q, want public", a.draft.forward.BindZone)
+	}
+
+	b := newTestApp(t)
+	b.state.Firewalld = runningFirewalld(t) // eth0 bound to public
+	b = startForwardingServer(t, b, "51821")
+	b = enter(t, b)
+	b = enter(t, b)
+	if b.draft.forward.BindZone != "" {
+		t.Fatalf("bound egress: bind zone = %q, want none", b.draft.forward.BindZone)
+	}
+	b = confirmAndRun(t, b)
+	if strings.Contains(b.confirm.Body, "--add-interface") {
+		t.Errorf("the conf binds the WireGuard interface although eth0 is bound:\n%s", b.confirm.Body)
+	}
+}
+
+// unboundEgress leaves eth0 in the default zone's catch-all only, the shape
+// of a NIC NetworkManager does not manage.
+func unboundEgress(fw wireguard.Firewalld) wireguard.Firewalld {
+	for i := range fw.Zones {
+		if fw.Zones[i].Name == "public" {
+			fw.Zones[i].Interfaces = nil
+		}
+	}
+	return fw
+}

@@ -58,6 +58,9 @@ func TestFixturesCarryNoRealAddress(t *testing.T) {
 				}
 			case strings.HasPrefix(name, "iptables"):
 				addrs = append(addrs, ruleAddrs(ParseIptablesRules(string(data)))...)
+			case strings.HasPrefix(name, "firewalld-"):
+				// firewall-cmd listings: every address in a rich rule.
+				addrs = append(addrs, textAddrs(string(data))...)
 			case strings.HasPrefix(name, "nft-"), strings.HasPrefix(name, "tui-firewall-"):
 				// JSON rule sets: every token shaped like an address, minus
 				// the ones every firewalld and ufw carry (multicast groups

@@ -40,10 +40,18 @@ type wgSummary struct {
 	// FirewallSource says what answered: tui-firewall (its --check),
 	// nftables (`nft -j list ruleset`) or iptables (`iptables -S`).
 	// FirewallManager is firewalld or ufw when one was recognised.
-	FirewallChecked bool           `json:"firewallChecked"`
-	FirewallSource  string         `json:"firewallSource,omitempty"`
-	FirewallManager string         `json:"firewallManager,omitempty"`
-	Interfaces      []ifaceSummary `json:"interfaces"`
+	FirewallChecked bool   `json:"firewallChecked"`
+	FirewallSource  string `json:"firewallSource,omitempty"`
+	FirewallManager string `json:"firewallManager,omitempty"`
+	// ForwardingChecked reports that the forwarding side was read, and
+	// ForwardingSource what answered: firewalld (`firewall-cmd
+	// --list-all-policies` and `--list-all-zones`) when it is running, else
+	// iptables (`iptables -S`, the FORWARD chain). ForwardingManager is
+	// firewalld, or ufw when the input read recognised it (issue #30).
+	ForwardingChecked bool           `json:"forwardingChecked"`
+	ForwardingSource  string         `json:"forwardingSource,omitempty"`
+	ForwardingManager string         `json:"forwardingManager,omitempty"`
+	Interfaces        []ifaceSummary `json:"interfaces"`
 }
 
 // ifaceSummary is one interface without anything that identifies it on the wire.
@@ -61,8 +69,8 @@ type ifaceSummary struct {
 	// the listen port: accept, reject, drop, or unknown when the firewall
 	// could not be read or its rules could not be judged.
 	ListenPortInput wireguard.Verdict `json:"listenPortInput"`
-	// Forwarding is whether the host's FORWARD chain accepts traffic in on
-	// this interface: a forwarding server.
+	// Forwarding is whether the host forwards traffic in on this interface
+	// (a forwarding server), as forwardingSource answered.
 	Forwarding bool `json:"forwarding"`
 }
 
@@ -106,7 +114,9 @@ func summariseWG(state wireguard.State) wgSummary {
 	now := time.Now()
 	summary := wgSummary{Available: state.WGAvailable, Error: state.WGError,
 		FirewallChecked: state.Input.Source != "", FirewallSource: state.Input.Source,
-		FirewallManager: state.Input.Manager}
+		FirewallManager:   state.Input.Manager,
+		ForwardingChecked: state.ForwardSource() != "", ForwardingSource: state.ForwardSource(),
+		ForwardingManager: state.ForwardManager()}
 	for _, dev := range state.Devices {
 		verdict := dev.PortVerdict
 		if verdict == "" {

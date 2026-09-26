@@ -75,11 +75,26 @@ func (a *app) askEgress(value string, problem error) {
 // wizardTookEgress validates the egress and opens the keygen.
 func (a *app) wizardTookEgress(value string) tea.Cmd {
 	a.draft.forward.Egress = value
+	a.draft.forward.Manager, a.draft.forward.EgressZone, a.draft.forward.BindZone = "", "", ""
+	if fwd := a.state.Firewalld; fwd.Running {
+		// firewalld is in charge of forwarding: an iptables FORWARD accept
+		// would be overruled by its own forward chain (issue #30).
+		a.draft.forward.Manager = wireguard.ManagerFirewalld
+		a.draft.forward.EgressZone = fwd.ZoneOf(value)
+		// firewalld dispatches no policy between two interfaces that are
+		// both only in the default zone's catch-all. When the egress NIC is
+		// bound (NetworkManager binds the NICs it manages) the policy is
+		// dispatched on it and nothing needs binding; otherwise the
+		// WireGuard interface is bound to the zone it falls into anyway.
+		if fwd.BoundZone(a.draft.name) == "" && fwd.BoundZone(value) == "" {
+			a.draft.forward.BindZone = fwd.DefaultZone()
+		}
+	}
 	if err := a.draft.forward.Validate(); err != nil {
 		a.askEgress(value, err)
 		return nil
 	}
-	if _, _, err := wireguard.ForwardingRules(a.draft.address, *a.draft.forward); err != nil {
+	if _, _, err := wireguard.ForwardingRules(a.draft.name, a.draft.address, *a.draft.forward); err != nil {
 		a.setStatus(ui.StatusError, err.Error())
 		return nil
 	}
@@ -88,16 +103,48 @@ func (a *app) wizardTookEgress(value string) tea.Cmd {
 
 // forwardExplanation is the paragraph above a forwarding server's conf: what
 // each of its PostUp lines is for.
-func forwardExplanation(f wireguard.ForwardSpec) string {
+func forwardExplanation(name string, f wireguard.ForwardSpec) string {
 	to := "any destination"
 	if len(f.Networks) > 0 {
 		to = strings.Join(f.Networks, ", ")
+	}
+	if f.Manager == wireguard.ManagerFirewalld {
+		policy, _ := wireguard.FirewalldPolicyName(name)
+		return "Forwarding server for " + to + " through " + f.Egress + ", on a host where " +
+			"firewalld is in charge: an iptables FORWARD rule would be overruled by firewalld's " +
+			"own forward chain, so PostUp builds the firewalld policy " + policy + " instead. " +
+			"It forwards from the peers' network (ingress ANY, matched by source) to zone " +
+			f.EgressZone + " (" + f.Egress + "'s zone) and masquerades it there; the return " +
+			"path is firewalld's own established/related accept. " + bindText(name, f) +
+			"PostUp also turns on " +
+			"net.ipv4.ip_forward (left on at down). Policies exist only in firewalld's " +
+			"permanent configuration, so PostUp and PostDown end in firewall-cmd --reload, " +
+			"which also drops any runtime-only firewalld change made without --permanent. " +
+			"PostDown deletes the policy, and its rules with it."
 	}
 	return "Forwarding server for " + to + " through " + f.Egress + ". PostUp turns on " +
 		"net.ipv4.ip_forward (left on at down: something else may rely on it), inserts FORWARD " +
 		"rules with -I — a FORWARD chain that ends in REJECT would never reach an appended " +
 		"rule — accepts the return path by connection tracking only, and masquerades the " +
 		"peers behind " + f.Egress + ". PostDown removes the rules."
+}
+
+// bindText explains the zone binding of the WireGuard interface, when PostUp
+// makes one.
+func bindText(name string, f wireguard.ForwardSpec) string {
+	if f.BindZone == "" {
+		return ""
+	}
+	return name + " is bound to zone " + f.BindZone + ", the zone it falls into anyway, so " +
+		"firewalld has an interface to dispatch the policy on (" + f.Egress + " is not bound to " +
+		"a zone either, and between two interfaces in the default zone's catch-all firewalld " +
+		"applies no policy); PostDown unbinds it. "
+}
+
+// firewalldForwarder reports that the interface being created is a
+// forwarding server whose rules are a firewalld policy.
+func (a *app) firewalldForwarder() bool {
+	return a.draft.forward != nil && a.draft.forward.Manager == wireguard.ManagerFirewalld
 }
 
 // portVerdictFor is what the host firewall does with a handshake to port.
@@ -128,6 +175,11 @@ func (a *app) wizardSteps() int {
 func (a *app) confirmOpenPort(name string, port int) tea.Cmd {
 	input := a.state.Input
 	open, err := wireguard.BuildOpenListenPortFor(input.Manager, port)
+	if a.firewalldForwarder() {
+		// The interface's PostUp reloads firewalld, which would drop a
+		// runtime-only port the moment it comes up.
+		open, err = wireguard.BuildOpenListenPortPermanent(port)
+	}
 	lines := []string{fmt.Sprintf("Step 3 of %d (optional) — open udp/%d, or no handshake "+
 		"reaches %s.", a.wizardSteps(), port, name)}
 	switch {
@@ -141,7 +193,7 @@ func (a *app) confirmOpenPort(name string, port int) tea.Cmd {
 	case input.Manager == wireguard.ManagerFirewalld:
 		lines = append(lines, fmt.Sprintf("firewalld does not allow udp/%d now (%s, read "+
 			"from %s). It rejects in its own nftables table whatever its zones do not "+
-			"allow, so the port is added to the running zone with firewall-cmd.",
+			"allow, so the port is added to its zone with firewall-cmd.",
 			port, a.portVerdictFor(port), input.Source))
 	default:
 		lines = append(lines, fmt.Sprintf("The host firewall does not accept udp/%d now "+
@@ -150,14 +202,23 @@ func (a *app) confirmOpenPort(name string, port int) tea.Cmd {
 			"with the cloud's own security list open; -I puts this rule above that REJECT.",
 			port, a.portVerdictFor(port), input.Source))
 	}
-	if input.Manager == wireguard.ManagerFirewalld {
+	switch {
+	case a.firewalldForwarder():
+		lines = append(lines, "This one goes into firewalld's permanent configuration, not "+
+			"the running one: "+name+"'s PostUp ends in firewall-cmd --reload, which would "+
+			"drop a runtime-only port. It takes effect at that reload when "+name+" comes up, "+
+			"and stays after down (firewall-cmd --permanent --remove-port="+
+			strconv.Itoa(port)+"/udp removes it).")
+	case input.Manager == wireguard.ManagerFirewalld:
 		lines = append(lines, "This is NOT persisted: it is gone at the next reboot or "+
 			"firewall-cmd --reload.")
-	} else {
+	default:
 		lines = append(lines, "This rule is NOT persisted: it is gone at the next reboot or "+
 			"firewall reload.")
 	}
 	switch {
+	case a.firewalldForwarder():
+		// Already said: the port is permanent.
 	case a.state.TUIFirewall:
 		lines = append(lines, "tui-firewall is installed: open udp/"+strconv.Itoa(port)+
 			" there to make it permanent (it has no non-interactive mode, so this tool does "+

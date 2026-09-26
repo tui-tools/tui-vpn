@@ -34,7 +34,9 @@ var searchPaths = map[string][]string{
 	// the nftables rule set (issue #28). Both are reads only.
 	"tui-firewall": TUIFirewallSearchPaths,
 	"nft":          {"/usr/sbin/nft", "/usr/bin/nft", "/sbin/nft"},
-	// firewall-cmd opens a listen port on a firewalld host, when asked.
+	// firewall-cmd opens a listen port on a firewalld host, when asked, and
+	// reads firewalld's zones and policies: on a firewalld host that is
+	// where a forwarding server's rules are (issue #30).
 	"firewall-cmd": {"/usr/bin/firewall-cmd", "/bin/firewall-cmd"},
 }
 
@@ -51,6 +53,9 @@ var privilegedRead = map[string]bool{
 	// Rule sets are root's to read, whoever reads them.
 	"tui-firewall": true,
 	"nft":          true,
+	// firewalld answers its listings over D-Bus, which polkit may refuse to
+	// an unprivileged caller.
+	"firewall-cmd": true,
 }
 
 // installHints tell a user what to install when a binary is missing.
@@ -212,9 +217,31 @@ func (r *Real) loadHostNet(ctx context.Context, state *State) {
 		state.Firewall = ParseIptablesRules(out)
 		iptablesOut = out
 	}
+	state.Firewalld = r.readFirewalld(ctx)
 	state.TUIFirewall = runner.Available("tui-firewall", TUIFirewallSearchPaths...)
 	state.Input = r.readInput(ctx, state.TUIFirewall, iptablesOut, state.Firewall.Error)
 	state.annotateFirewall()
+}
+
+// readFirewalld reads firewalld's runtime policies and zones, when
+// firewall-cmd is installed. The policies are read first: when firewalld is
+// not running that read fails ("FirewallD is not running"), and the host's
+// forwarding is iptables' to answer.
+func (r *Real) readFirewalld(ctx context.Context) Firewalld {
+	run, err := r.runnerFor("firewall-cmd")
+	if err != nil {
+		return Firewalld{}
+	}
+	policies, err := run.Read(ctx, "firewall-cmd", "--list-all-policies")
+	if err != nil {
+		return Firewalld{Error: runner.FirstLine(err.Error())}
+	}
+	zones, err := run.Read(ctx, "firewall-cmd", "--list-all-zones")
+	if err != nil {
+		return Firewalld{Error: runner.FirstLine(err.Error())}
+	}
+	return Firewalld{Running: true, Zones: ParseFirewalldZones(zones),
+		Policies: ParseFirewalldPolicies(policies)}
 }
 
 // readInput reads the host firewall's input side for the listen-port
