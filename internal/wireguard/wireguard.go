@@ -80,9 +80,10 @@ type Device struct {
 	// `u` on.
 	ConfigOnly bool   `json:"configOnly,omitempty"`
 	Peers      []Peer `json:"peers"`
-	// Forwarding reports that the host's FORWARD chain accepts traffic
-	// coming in on this interface: it is a forwarding server (see
-	// ForwardingRules). Read from the live ruleset.
+	// Forwarding reports that the host forwards traffic coming in on this
+	// interface: it is a forwarding server (see ForwardingRules). Read from
+	// the live ruleset: firewalld's policies when firewalld is running, else
+	// the iptables FORWARD chain.
 	Forwarding bool `json:"forwarding"`
 	// PortVerdict is what the host firewall does with a handshake to
 	// ListenPort; unknown when it could not be read or judged.
@@ -129,6 +130,41 @@ type State struct {
 	// TUIFirewall reports that tui-firewall is installed: the tool that
 	// opens a port for good, which the listen-port step names.
 	TUIFirewall bool `json:"-"`
+	// Firewalld is firewalld's runtime zones and policies. When it is
+	// running, it is in charge of forwarding and the FORWARD column is read
+	// from it instead of from `iptables -S` (issue #30).
+	Firewalld Firewalld `json:"-"`
+}
+
+// Forwarding sources: what the FORWARD column was read from.
+const (
+	ForwardSourceFirewalld = "firewalld"
+	ForwardSourceIptables  = "iptables"
+)
+
+// ForwardSource says what answered for forwarding: firewalld when it is
+// running, iptables when its filter table was read, empty when neither was.
+func (s State) ForwardSource() string {
+	switch {
+	case s.Firewalld.Running:
+		return ForwardSourceFirewalld
+	case s.Firewall.Checked:
+		return ForwardSourceIptables
+	}
+	return ""
+}
+
+// ForwardManager is the firewall manager in charge of forwarding: firewalld
+// when it is running, else the manager the input read recognised (ufw's
+// forwarding is still iptables' FORWARD chain), empty for a bare ruleset.
+func (s State) ForwardManager() string {
+	if s.Firewalld.Running {
+		return ManagerFirewalld
+	}
+	if s.Input.Manager == ManagerUFW {
+		return ManagerUFW
+	}
+	return ""
 }
 
 // annotateFirewall fills each device's forwarding flag and listen-port
@@ -136,7 +172,11 @@ type State struct {
 func (s *State) annotateFirewall() {
 	for i := range s.Devices {
 		d := &s.Devices[i]
-		d.Forwarding = s.Firewall.Forwards(d.Name)
+		if s.Firewalld.Running {
+			d.Forwarding = s.Firewalld.Forwards(d.Name)
+		} else {
+			d.Forwarding = s.Firewall.Forwards(d.Name)
+		}
 		d.PortVerdict = VerdictUnknown
 		if d.ListenPort > 0 {
 			d.PortVerdict = s.Input.UDPVerdict(d.ListenPort)
@@ -470,7 +510,7 @@ PostUp = wg set %%i private-key %s
 	if fwd == nil {
 		return conf, nil
 	}
-	up, down, err := ForwardingRules(address, *fwd)
+	up, down, err := ForwardingRules(iface, address, *fwd)
 	if err != nil {
 		return "", err
 	}
@@ -478,6 +518,10 @@ PostUp = wg set %%i private-key %s
 	b.WriteString(conf)
 	b.WriteString("# Forwarding server: peers reach the networks behind this host through " +
 		fwd.Egress + ".\n# ip_forward is left on at down; something else may rely on it.\n")
+	if fwd.Manager == ManagerFirewalld {
+		b.WriteString("# firewalld is in charge: the rules are the firewalld policy " + policyNameOr(iface) +
+			",\n# created at up and deleted at down. Each --reload drops runtime-only firewalld changes.\n")
+	}
 	for _, line := range up {
 		b.WriteString("PostUp = " + line + "\n")
 	}

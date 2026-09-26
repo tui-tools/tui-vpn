@@ -143,6 +143,46 @@ if systemctl is-active --quiet firewalld 2>/dev/null && command -v wg >/dev/null
   done
 fi
 
+# Forwarding is read from the firewall in charge of it (issue #30): firewalld's
+# own policies when it is running, since it overrules an iptables FORWARD
+# accept, else the iptables FORWARD chain. A forwarding server created on a
+# firewalld host owns the policy <iface>-fwd, so --check has to say it
+# forwards exactly when firewalld lists that policy.
+if systemctl is-active --quiet firewalld 2>/dev/null; then
+  check "check reads forwarding from firewalld" \
+    "sudo -n $bin --check" \
+    '"forwardingSource": "firewalld"'
+  check "check names firewalld as in charge of forwarding" \
+    "sudo -n $bin --check" \
+    '"forwardingManager": "firewalld"'
+  if command -v wg >/dev/null 2>&1 && sudo -n wg show interfaces >/dev/null 2>&1; then
+    for iface in $(sudo -n wg show interfaces); do
+      want='"forwarding":false'
+      if sudo -n firewall-cmd --info-policy="$iface-fwd" >/dev/null 2>&1; then
+        want='"forwarding":true'
+      fi
+      check "check agrees with firewalld about forwarding for $iface" \
+        "sudo -n $bin --check | tr -d ' \n' | sed 's/\"name\":/\n&/g' | grep '^\"name\":\"$iface\"' | grep -oE '\"forwarding\":(true|false)' || true" \
+        "$want"
+    done
+  fi
+elif command -v iptables >/dev/null 2>&1 && sudo -n iptables -S >/dev/null 2>&1; then
+  check "check reads forwarding from iptables" \
+    "sudo -n $bin --check" \
+    '"forwardingSource": "iptables"'
+  if command -v wg >/dev/null 2>&1 && sudo -n wg show interfaces >/dev/null 2>&1; then
+    for iface in $(sudo -n wg show interfaces); do
+      want='"forwarding":false'
+      if sudo -n iptables -S FORWARD | grep -qE -- "-i $iface .*-j ACCEPT"; then
+        want='"forwarding":true'
+      fi
+      check "check agrees with iptables about forwarding for $iface" \
+        "sudo -n $bin --check | tr -d ' \n' | sed 's/\"name\":/\n&/g' | grep '^\"name\":\"$iface\"' | grep -oE '\"forwarding\":(true|false)' || true" \
+        "$want"
+    done
+  fi
+fi
+
 # The whole promise, on the real read path: --check goes into public issues,
 # so a URL anywhere in it is a bug.
 check "check carries no URL of this host" \

@@ -196,3 +196,20 @@ func FuzzBuildAddPeer(f *testing.F) {
 		}
 	})
 }
+
+// FuzzParseFirewalld feeds arbitrary text to the firewall-cmd listing
+// readers, whose answer decides the FORWARD column on a firewalld host: they
+// must not panic, and a firewalld that is not running forwards nothing.
+func FuzzParseFirewalld(f *testing.F) {
+	seedFrom(f, "firewalld-")
+	f.Add("x (active)\n  ingress-zones: ANY\n  egress-zones: y\n  rich rules: \n\trule accept\n")
+	f.Fuzz(func(t *testing.T, out string) {
+		fw := Firewalld{Running: true, Zones: ParseFirewalldZones(out), Policies: ParseFirewalldPolicies(out)}
+		_ = fw.Forwards("wg0")
+		fw.Running = false
+		if fw.Forwards("wg0") {
+			t.Fatal("a firewalld that is not running forwards")
+		}
+		_ = fw.ZoneOf("wg0")
+	})
+}

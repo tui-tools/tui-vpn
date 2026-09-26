@@ -100,7 +100,7 @@ func TestParseNetworks(t *testing.T) {
 }
 
 func TestForwardingRules(t *testing.T) {
-	up, down, err := ForwardingRules("192.0.2.1/24",
+	up, down, err := ForwardingRules("wg0", "192.0.2.1/24",
 		ForwardSpec{Networks: []string{"198.51.100.0/24"}, Egress: "ens3"})
 	if err != nil {
 		t.Fatal(err)
@@ -120,14 +120,14 @@ func TestForwardingRules(t *testing.T) {
 		t.Errorf("up:\n%s\ndown:\n%s", strings.Join(up, "\n"), strings.Join(down, "\n"))
 	}
 	// Any destination: no -d at all.
-	up, _, _ = ForwardingRules("192.0.2.1/24", ForwardSpec{Egress: "ens3"})
+	up, _, _ = ForwardingRules("wg0", "192.0.2.1/24", ForwardSpec{Egress: "ens3"})
 	if strings.Contains(strings.Join(up, "\n"), " -d ") {
 		t.Errorf("a full tunnel still restricts the destination:\n%s", strings.Join(up, "\n"))
 	}
-	if _, _, err := ForwardingRules("2001:db8::1/64", ForwardSpec{Egress: "ens3"}); err == nil {
+	if _, _, err := ForwardingRules("wg0", "2001:db8::1/64", ForwardSpec{Egress: "ens3"}); err == nil {
 		t.Error("an IPv6 interface address was accepted")
 	}
-	if _, _, err := ForwardingRules("192.0.2.1/24", ForwardSpec{Egress: "-o"}); err == nil {
+	if _, _, err := ForwardingRules("wg0", "192.0.2.1/24", ForwardSpec{Egress: "-o"}); err == nil {
 		t.Error("a flag as egress was accepted")
 	}
 

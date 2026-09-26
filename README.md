@@ -79,12 +79,34 @@ PostDown = iptables -t nat -D POSTROUTING -s 10.8.0.0/24 -o eth0 -d 10.0.0.0/16 
 
 The FORWARD rules are inserted (`-I`): the provider's Ubuntu image ends its FORWARD chain in `-j REJECT`, and a rule appended after it would never match. The return path is accepted by connection tracking only, so nothing behind the host can open a connection towards the peers. `ip_forward` is left on at down, because something else on the host may rely on it.
 
+**On a firewalld host** (firewalld running when the interface is created) the same intent is written as a firewalld policy instead. firewalld filters forwarded traffic in its own nftables table, and a packet has to be accepted by every table on the forward hook, so an iptables FORWARD accept there forwards nothing. The conf gets one policy owned by the interface, `<interface>-fwd`:
+
+```ini
+PostUp = sysctl -w net.ipv4.ip_forward=1
+PostUp = firewall-cmd --permanent --delete-policy=wg0-fwd >/dev/null 2>&1 || true
+PostUp = firewall-cmd --permanent --new-policy=wg0-fwd
+PostUp = firewall-cmd --permanent --policy=wg0-fwd --add-ingress-zone=ANY
+PostUp = firewall-cmd --permanent --policy=wg0-fwd --add-egress-zone=public
+PostUp = firewall-cmd --permanent --policy=wg0-fwd --add-rich-rule='rule family="ipv4" source address="10.8.0.0/24" destination address="10.0.0.0/16" accept'
+PostUp = firewall-cmd --permanent --policy=wg0-fwd --add-rich-rule='rule family="ipv4" source address="10.8.0.0/24" destination address="10.0.0.0/16" masquerade'
+PostUp = firewall-cmd --reload
+PostDown = firewall-cmd --permanent --delete-policy=wg0-fwd
+PostDown = firewall-cmd --reload
+```
+
+- The egress zone is the zone firewalld puts the egress NIC in (its bound zone, else the default zone), read when the wizard runs. Ingress is `ANY` and the rules match the peers' network as the source, so the WireGuard interface stays in whatever zone it falls into and the peers' access to the host itself does not change.
+- Accept and masquerade are rich rules scoped to the peers' network and each destination network, so nothing else that crosses into that zone is accepted or rewritten, and no shared zone setting (such as the zone's own masquerade) is touched. The return path is firewalld's own established/related accept.
+- Policies exist only in firewalld's permanent configuration, so the lines are `--permanent` and end in `firewall-cmd --reload`. A reload drops runtime-only firewalld changes made without `--permanent`; the dialog says so. The first line removes a policy left behind by a crash while the interface was up, so `up` never fails on it. `PostDown` deletes the policy, which takes its rules with it, and reloads: after `down` firewalld is back to what it was.
+- For the same reason the listen-port step on such a host is `firewall-cmd --permanent --add-port=<port>/udp`: a runtime-only port would be dropped by the reload at `up`. It takes effect at that reload and stays after `down`.
+
+ufw hosts and hosts with a plain nftables or iptables ruleset keep the iptables rules above.
+
 **The listen port.** The same image ends its INPUT chain in `-j REJECT`, so the WireGuard port was closed even with the cloud's own security list open. When the host firewall does not already accept the port (or cannot be read), the wizard offers one more previewed step, `iptables -I INPUT -p udp --dport <port> -j ACCEPT`, and says plainly that it is not persisted: it is gone at the next reboot or firewall reload. On a firewalld host the step is `firewall-cmd --add-port=<port>/udp` instead: firewalld rejects whatever its zones do not allow in its own nftables table, where an iptables rule is never consulted. When [tui-firewall](https://tui.tools/tools/tui-firewall/) is installed, the dialog says to open the port there to keep it; tui-firewall has no non-interactive mode, so tui-wireguard does not drive it. Otherwise it points at the way to keep it for the firewall in charge (`ufw allow`, `firewall-cmd --permanent`, `netfilter-persistent save`).
 
 The interfaces screen shows both answers for every interface, read from the live firewall (as root):
 
 - **UDP IN** is `open`, `closed` or `?` for the listen port. It is read from [tui-firewall](https://tui.tools/tools/tui-firewall/)'s `--check` when tui-firewall is installed (it knows ufw, firewalld, nftables and iptables), else from `nft -j list ruleset`, else from `iptables -S`. Jumps and gotos are followed into user chains (ufw's, docker's, firewalld's zones), rules that only some senders match are ignored, and a firewalld zone counts when it is the default zone or an interface is bound to it. Where the answer cannot be told (a jump into a chain that was not read, a firewalld service whose ports are not known), it is `?`, never `closed`.
-- **FORWARD** is whether the iptables FORWARD chain accepts traffic in on the interface: where a forwarding server's PostUp puts its rules.
+- **FORWARD** is whether the host forwards traffic in on the interface. When firewalld is running it is read from firewalld itself (`firewall-cmd --list-all-policies` and `--list-all-zones`, the running configuration): `yes` when an active policy whose ingress is `ANY` or the interface's zone, and whose egress is not only the host, accepts by its target or by a rich rule. An iptables FORWARD accept on such a host does not count, since firewalld overrules it. Everywhere else it is whether the iptables FORWARD chain accepts traffic in on the interface: where a forwarding server's PostUp puts its rules.
 
 ### Persist peer changes (`w`)
 
@@ -118,7 +140,7 @@ Prints the versions and machine facts a bug report needs and exits: no UI, no pr
 tui-wireguard --check
 ```
 
-Reads the interfaces and the host firewall once and prints a summary as JSON: interface and peer counts, per-peer handshake ages, per-interface `listenPortInput` (what the host firewall does with a handshake: `accept`, `reject`, `drop`, or `unknown` when it could not be read or judged; `firewallChecked` says whether it was read, `firewallSource` what answered, `tui-firewall`, `nftables` or `iptables`, and `firewallManager` whether that is `firewalld` or `ufw`) and `forwarding`, and a `compat` block naming the wireguard-tools version.
+Reads the interfaces and the host firewall once and prints a summary as JSON: interface and peer counts, per-peer handshake ages, per-interface `listenPortInput` (what the host firewall does with a handshake: `accept`, `reject`, `drop`, or `unknown` when it could not be read or judged; `firewallChecked` says whether it was read, `firewallSource` what answered, `tui-firewall`, `nftables` or `iptables`, and `firewallManager` whether that is `firewalld` or `ufw`) and `forwarding` (`forwardingChecked` says whether the forwarding side was read, `forwardingSource` what answered, `firewalld` or `iptables`, and `forwardingManager` whether that is `firewalld` or `ufw`), and a `compat` block naming the wireguard-tools version.
 
 Like `--report`, it carries no key, no endpoint, no URL and no address of the host: it is meant to be pasted into scripts and issues. `test/smoke.sh` asserts that no `://` survives anywhere in the output, and that the interfaces, ports and peer counts agree with `wg show`.
 
@@ -235,7 +257,7 @@ Available once the first release lands in pkgs.tui.tools.
 ### Any distribution, static binary — coming soon
 
 ```sh
-curl -fsSL https://github.com/tui-tools/tui-wireguard/releases/download/v0.5.1/tui-wireguard_0.5.1_linux_amd64.tar.gz | tar -xz tui-wireguard
+curl -fsSL https://github.com/tui-tools/tui-wireguard/releases/download/v0.5.2/tui-wireguard_0.5.2_linux_amd64.tar.gz | tar -xz tui-wireguard
 sudo install -m0755 tui-wireguard /usr/local/bin/tui-wireguard
 ```
 

@@ -530,7 +530,7 @@ func (a *app) confirmWriteConf(publicKey string) tea.Cmd {
 	body := fmt.Sprintf("Step 2 of %d — write ", a.wizardSteps()) + wireguard.ConfPath(name) +
 		" (mode 600, via stdin). It references the key file and contains no private key."
 	if a.draft.forward != nil {
-		body += "\n\n" + forwardExplanation(*a.draft.forward)
+		body += "\n\n" + forwardExplanation(name, *a.draft.forward)
 	}
 	body += "\n\n" + conf
 	if publicKey != "" {
