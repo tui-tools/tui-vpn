@@ -227,6 +227,17 @@ if command -v wg >/dev/null 2>&1 && sudo -n wg show interfaces >/dev/null 2>&1; 
   done
 fi
 
+# Every conf in /etc/wireguard has to parse: `wg-quick save` writes the
+# PostUp/PostDown hooks back through a bash substitution that mangles "&",
+# so a hook written with one comes back broken after the first save.
+if command -v wg-quick >/dev/null 2>&1 && sudo -n test -d /etc/wireguard; then
+  for conf in $(sudo -n ls /etc/wireguard 2>/dev/null | sed -n 's/\.conf$//p'); do
+    check "the conf of $conf parses (wg-quick strip)" \
+      "sudo -n wg-quick strip $conf >/dev/null && echo parsed" \
+      '^parsed$'
+  done
+fi
+
 # The configuration of the old name is still read after an upgrade from
 # tui-vpn, and the tool says so. Only checked when the lab left one behind.
 if [[ -r /etc/tui-vpn/config.toml ]]; then

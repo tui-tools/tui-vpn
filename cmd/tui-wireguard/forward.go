@@ -81,7 +81,12 @@ func (a *app) wizardTookEgress(value string) tea.Cmd {
 		// would be overruled by its own forward chain (issue #30).
 		a.draft.forward.Manager = wireguard.ManagerFirewalld
 		a.draft.forward.EgressZone = fwd.ZoneOf(value)
-		if fwd.BoundZone(a.draft.name) == "" {
+		// firewalld dispatches no policy between two interfaces that are
+		// both only in the default zone's catch-all. When the egress NIC is
+		// bound (NetworkManager binds the NICs it manages) the policy is
+		// dispatched on it and nothing needs binding; otherwise the
+		// WireGuard interface is bound to the zone it falls into anyway.
+		if fwd.BoundZone(a.draft.name) == "" && fwd.BoundZone(value) == "" {
 			a.draft.forward.BindZone = fwd.DefaultZone()
 		}
 	}
@@ -131,8 +136,9 @@ func bindText(name string, f wireguard.ForwardSpec) string {
 		return ""
 	}
 	return name + " is bound to zone " + f.BindZone + ", the zone it falls into anyway, so " +
-		"firewalld has an interface to dispatch the policy on (with both ends in the default " +
-		"zone's catch-all it applies no policy); PostDown unbinds it. "
+		"firewalld has an interface to dispatch the policy on (" + f.Egress + " is not bound to " +
+		"a zone either, and between two interfaces in the default zone's catch-all firewalld " +
+		"applies no policy); PostDown unbinds it. "
 }
 
 // firewalldForwarder reports that the interface being created is a

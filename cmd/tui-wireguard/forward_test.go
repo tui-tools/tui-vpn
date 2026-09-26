@@ -277,7 +277,7 @@ func runningFirewalld(t *testing.T) wireguard.Firewalld {
 // runtime-only port.
 func TestForwardingServerOnFirewalld(t *testing.T) {
 	a := newTestApp(t)
-	a.state.Firewalld = runningFirewalld(t)
+	a.state.Firewalld = unboundEgress(runningFirewalld(t))
 	a.state.Input = firewalldInput(t, "nft-firewalld-closed.json")
 	a = startForwardingServer(t, a, "51821")
 	a = enter(t, a) // the proposed networks
@@ -305,7 +305,7 @@ func TestForwardingServerOnFirewalld(t *testing.T) {
 	if strings.Contains(body, "iptables -I") {
 		t.Errorf("conf preview inserts iptables rules on a firewalld host:\n%s", body)
 	}
-	a.state.Firewalld = runningFirewalld(t)
+	a.state.Firewalld = unboundEgress(runningFirewalld(t))
 	a.state.Input = firewalldInput(t, "nft-firewalld-closed.json")
 	a = confirmAndRun(t, a) // write the conf
 	if !strings.Contains(a.confirm.Command, "firewall-cmd --permanent --add-port=51821/udp") {
@@ -349,4 +349,42 @@ func TestCheckReportsForwardingSource(t *testing.T) {
 		t.Errorf("forwarding = %v %q %q, want the demo's iptables", wg.ForwardingChecked,
 			wg.ForwardingSource, wg.ForwardingManager)
 	}
+}
+
+// TestForwardingServerOnFirewalldBoundEgress: when the egress NIC is bound to
+// a zone (NetworkManager binds the NICs it manages), firewalld dispatches the
+// policy on it and the WireGuard interface is left alone.
+func TestForwardingServerOnFirewalldBoundEgress(t *testing.T) {
+	a := newTestApp(t)
+	a.state.Firewalld = unboundEgress(runningFirewalld(t))
+	a = startForwardingServer(t, a, "51821")
+	a = enter(t, a)
+	a = enter(t, a)
+	if a.draft.forward.BindZone != "public" {
+		t.Fatalf("unbound egress: bind zone = %q, want public", a.draft.forward.BindZone)
+	}
+
+	b := newTestApp(t)
+	b.state.Firewalld = runningFirewalld(t) // eth0 bound to public
+	b = startForwardingServer(t, b, "51821")
+	b = enter(t, b)
+	b = enter(t, b)
+	if b.draft.forward.BindZone != "" {
+		t.Fatalf("bound egress: bind zone = %q, want none", b.draft.forward.BindZone)
+	}
+	b = confirmAndRun(t, b)
+	if strings.Contains(b.confirm.Body, "--add-interface") {
+		t.Errorf("the conf binds the WireGuard interface although eth0 is bound:\n%s", b.confirm.Body)
+	}
+}
+
+// unboundEgress leaves eth0 in the default zone's catch-all only, the shape
+// of a NIC NetworkManager does not manage.
+func unboundEgress(fw wireguard.Firewalld) wireguard.Firewalld {
+	for i := range fw.Zones {
+		if fw.Zones[i].Name == "public" {
+			fw.Zones[i].Interfaces = nil
+		}
+	}
+	return fw
 }

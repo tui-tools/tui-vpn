@@ -130,7 +130,7 @@ func TestFirewalldForwardingRules(t *testing.T) {
 	}
 	wantUp := []string{
 		"sysctl -w net.ipv4.ip_forward=1",
-		"firewall-cmd --permanent --delete-policy=wg0-fwd >/dev/null 2>&1 || true",
+		"firewall-cmd --permanent --delete-policy=wg0-fwd -q 2>/dev/null || true",
 		"firewall-cmd --permanent --new-policy=wg0-fwd",
 		"firewall-cmd --permanent --policy=wg0-fwd --add-ingress-zone=ANY",
 		"firewall-cmd --permanent --policy=wg0-fwd --add-egress-zone=public",
@@ -203,6 +203,28 @@ func TestFirewalldForwardingRules(t *testing.T) {
 	spec.EgressZone = "public; reboot"
 	if _, _, err := ForwardingRules("wg0", "198.51.100.1/24", spec); err == nil {
 		t.Error("a zone that is not a plain name was accepted")
+	}
+}
+
+// TestHooksSurviveWgQuickSave: wg-quick save writes PostUp/PostDown back
+// through a bash substitution where "&" is the matched text, which turned
+// `2>&1` into `2>[Interface]` on Fedora 44. No hook this tool writes may
+// carry one, on any firewall.
+func TestHooksSurviveWgQuickSave(t *testing.T) {
+	for _, spec := range []ForwardSpec{
+		{Egress: "ens3"},
+		{Egress: "ens3", Networks: []string{"203.0.113.0/24"}},
+		{Egress: "ens3", Manager: ManagerFirewalld, EgressZone: "public"},
+		{Egress: "ens3", Manager: ManagerFirewalld, EgressZone: "public", BindZone: "public",
+			Networks: []string{"203.0.113.0/24"}},
+	} {
+		conf, err := InterfaceConfWith("wg0", "198.51.100.1/24", 51820, &spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(conf, "&") {
+			t.Errorf("a hook carries \"&\", which wg-quick save mangles:\n%s", conf)
+		}
 	}
 }
 

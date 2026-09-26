@@ -83,7 +83,7 @@ The FORWARD rules are inserted (`-I`): the provider's Ubuntu image ends its FORW
 
 ```ini
 PostUp = sysctl -w net.ipv4.ip_forward=1
-PostUp = firewall-cmd --permanent --delete-policy=wg0-fwd >/dev/null 2>&1 || true
+PostUp = firewall-cmd --permanent --delete-policy=wg0-fwd -q 2>/dev/null || true
 PostUp = firewall-cmd --permanent --zone=public --add-interface=wg0
 PostUp = firewall-cmd --permanent --new-policy=wg0-fwd
 PostUp = firewall-cmd --permanent --policy=wg0-fwd --add-ingress-zone=ANY
@@ -97,12 +97,14 @@ PostDown = firewall-cmd --reload
 ```
 
 - The egress zone is the zone firewalld puts the egress NIC in (its bound zone, else the default zone), read when the wizard runs. Ingress is `ANY` and the rules match the peers' network as the source, so the WireGuard interface stays in whatever zone it falls into and the peers' access to the host itself does not change.
-- When the WireGuard interface is not bound to a zone yet, PostUp binds it to the zone it falls into anyway (the default zone) and PostDown unbinds it. That changes nothing for its traffic, but firewalld dispatches a policy only on an interface it knows: with both the WireGuard interface and the egress NIC in the default zone's catch-all (an egress NIC NetworkManager did not bind, such as a second NIC or a veth) it generates no forward rule for the policy at all, and the packet meets the zone's reject.
+- When neither the WireGuard interface nor the egress NIC is bound to a zone, PostUp binds the WireGuard interface to the zone it falls into anyway (the default zone) and PostDown unbinds it; the example above is that case (a veth or a second NIC that NetworkManager does not manage). It changes nothing for the interface's traffic, but firewalld dispatches no policy between two interfaces that are both only in the default zone's catch-all, so without it the policy exists and forwards nothing. When the egress NIC is bound (NetworkManager binds the NICs it manages), the policy is dispatched on it and the two binding lines are not written.
 - Accept and masquerade are rich rules scoped to the peers' network and each destination network, so nothing else that crosses into that zone is accepted or rewritten, and no shared zone setting (such as the zone's own masquerade) is touched. The return path is firewalld's own established/related accept.
 - Policies exist only in firewalld's permanent configuration, so the lines are `--permanent` and end in `firewall-cmd --reload`. A reload drops runtime-only firewalld changes made without `--permanent`; the dialog says so. The first line removes a policy left behind by a crash while the interface was up, so `up` never fails on it. `PostDown` deletes the policy, which takes its rules with it, and reloads: after `down` firewalld's running and permanent configuration is back to what it was (firewalld itself keeps a `.xml.old` backup of each file it rewrote under `/etc/firewalld`).
 - For the same reason the listen-port step on such a host is `firewall-cmd --permanent --add-port=<port>/udp`: a runtime-only port would be dropped by the reload at `up`. It takes effect at that reload and stays after `down`.
 
 ufw hosts and hosts with a plain nftables or iptables ruleset keep the iptables rules above.
+
+**Known limitation on Ubuntu 26.04.** Its AppArmor profile for `wg-quick` (shipped by the `apparmor` package) lets the hooks' `sysctl` write only `src_valid_mark`, so `PostUp = sysctl -w net.ipv4.ip_forward=1` is denied (an `apparmor="DENIED"` line in the journal) and the interface comes up forwarding nothing while the FORWARD rules are in place. Until the tool turns forwarding on outside `wg-quick`, enable it on such a host with `sysctl -w net.ipv4.ip_forward=1` (and a file in `/etc/sysctl.d/` to keep it).
 
 **The listen port.** The same image ends its INPUT chain in `-j REJECT`, so the WireGuard port was closed even with the cloud's own security list open. When the host firewall does not already accept the port (or cannot be read), the wizard offers one more previewed step, `iptables -I INPUT -p udp --dport <port> -j ACCEPT`, and says plainly that it is not persisted: it is gone at the next reboot or firewall reload. On a firewalld host the step is `firewall-cmd --add-port=<port>/udp` instead: firewalld rejects whatever its zones do not allow in its own nftables table, where an iptables rule is never consulted. When [tui-firewall](https://tui.tools/tools/tui-firewall/) is installed, the dialog says to open the port there to keep it; tui-firewall has no non-interactive mode, so tui-wireguard does not drive it. Otherwise it points at the way to keep it for the firewall in charge (`ufw allow`, `firewall-cmd --permanent`, `netfilter-persistent save`).
 

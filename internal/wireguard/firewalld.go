@@ -284,14 +284,21 @@ func FirewalldPolicyName(iface string) (string, error) {
 //     so nothing else that crosses into that zone is accepted or rewritten.
 //   - the return path needs nothing: firewalld accepts established and
 //     related traffic before any policy.
-//   - when the WireGuard interface is not bound to a zone yet (bindZone is
-//     the zone it falls into, the default zone), it is bound to that same
-//     zone, which changes nothing for its traffic but gives firewalld an
-//     interface to dispatch the policy on: with both ends in the default
-//     zone's catch-all, firewalld generates no forward dispatch for the
-//     policy at all, and the packet meets the zone's reject. That is the
-//     case of an egress NIC NetworkManager did not bind (a second NIC, a
-//     veth), found in a container stand-in for the lab.
+//   - when neither the WireGuard interface nor the egress NIC is bound to a
+//     zone (bindZone is then the zone they fall into, the default zone),
+//     the WireGuard interface is bound to that same zone. That changes
+//     nothing for its traffic but gives firewalld an interface to dispatch
+//     the policy on: between two interfaces in the default zone's
+//     catch-all firewalld generates no forward dispatch for the policy at
+//     all, and the packet meets the zone's reject. That is the case of an
+//     egress NIC NetworkManager does not manage (a second NIC, a veth).
+//     When the egress NIC is bound, as NetworkManager binds the NICs it
+//     manages, the lab showed the policy dispatched without it.
+//
+// No line may contain "&": `wg-quick save` (the `w` key, and the save the
+// add-peer flow offers) writes the hooks back through a bash substitution in
+// which "&" stands for the matched text, so `2>&1` came back as
+// `2>[Interface]` in the lab and the saved conf no longer parsed.
 //
 // Policies are permanent-only objects in firewalld, so every line is
 // --permanent and the last one is a --reload. PostUp first deletes a
@@ -313,7 +320,7 @@ func firewalldForwardingRules(iface, peers, egressZone, bindZone string, dests [
 	fc := "firewall-cmd --permanent"
 	up = []string{
 		"sysctl -w net.ipv4.ip_forward=1",
-		fc + " --delete-policy=" + policy + " >/dev/null 2>&1 || true",
+		fc + " --delete-policy=" + policy + " -q 2>/dev/null || true",
 	}
 	if bindZone != "" {
 		up = append(up, fc+" --zone="+bindZone+" --add-interface="+iface)
