@@ -166,6 +166,9 @@ func (a *app) confirmOpenPort(name string, port int) tea.Cmd {
 		lines = append(lines, "To keep it, run the same with --permanent as well "+
 			"(firewall-cmd --permanent --add-port="+strconv.Itoa(port)+"/udp), or install "+
 			"tui-firewall and open the port there.")
+	case input.Manager == wireguard.ManagerUFW:
+		lines = append(lines, "To keep it, allow it in ufw (ufw allow "+strconv.Itoa(port)+
+			"/udp), or install tui-firewall and open the port there.")
 	default:
 		lines = append(lines, "To keep it, save the ruleset (netfilter-persistent save), or "+
 			"install tui-firewall and open the port there.")

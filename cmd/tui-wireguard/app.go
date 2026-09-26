@@ -683,7 +683,7 @@ func (a *app) addPeerTookEndpoint(value string) tea.Cmd {
 	if value != "" {
 		prefill = strconv.Itoa(wireguard.SuggestedKeepalive)
 	}
-	a.openInput(inputAddPeerKeepalive, addPeerKeepaliveTitle, "25", prefill, addPeerKeepaliveHelp)
+	a.openInput(inputAddPeerKeepalive, addPeerKeepaliveTitle, "off", prefill, addPeerKeepaliveHelp)
 	return nil
 }
 
@@ -691,7 +691,7 @@ func (a *app) addPeerTookEndpoint(value string) tea.Cmd {
 func (a *app) addPeerTookKeepalive(value string) tea.Cmd {
 	keepalive, err := wireguard.ParseKeepalive(value)
 	if err != nil {
-		a.openRetry(inputAddPeerKeepalive, addPeerKeepaliveTitle, "25", value,
+		a.openRetry(inputAddPeerKeepalive, addPeerKeepaliveTitle, "off", value,
 			addPeerKeepaliveHelp, err)
 		return nil
 	}
