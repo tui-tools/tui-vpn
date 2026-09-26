@@ -177,7 +177,7 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.busy = false
 		if msg.err != nil {
 			a.after = nil
-			a.setStatus(ui.StatusError, runner.FirstLine(msg.err.Error()))
+			a.setStatus(ui.StatusError, runner.StatusLine(msg.err.Error()))
 			return a, a.load()
 		}
 
